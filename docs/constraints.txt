@@ -1,0 +1,320 @@
+# THz Material Parameter Extraction - Problem Constraints
+# Single Layer Sample - ML-based Inverse Problem
+# Version: 1.0
+# Date: 2025-01-17
+
+================================================================================
+PROBLEM DEFINITION
+================================================================================
+
+Goal: Extract material parameters (n, κ, d) from THz transmission measurements
+      for single-layer samples using neural network regression.
+
+Input:  Reference pulse (THz through air) + Sample pulse (THz through material)
+Output: Refractive index (n), Extinction coefficient (κ), Thickness (d)
+
+Method: Encoder NN predicts parameters → Physics decoder validates via MTM
+
+================================================================================
+PARAMETER RANGES
+================================================================================
+
+Refractive Index (n):
+  - Range: [1.1, 7.0]
+  - Physical meaning: Speed of light reduction in material
+  - Note: Most common materials fall in [1.2, 4.0]
+
+Extinction Coefficient (κ):
+  - Range: [-0.1, 0.01]
+  - Physical meaning: Absorption strength (imaginary part of refractive index)
+  - Note: Negative values represent gain (rare), positive = absorption
+
+Thickness (d):
+  - Range: [100, 1000] μm (micrometers)
+  - Physical meaning: Physical thickness of sample layer
+  - Note: Must satisfy windowing constraints (see below)
+
+================================================================================
+MEASUREMENT CONSTRAINTS (WELL-POSEDNESS CONDITIONS)
+================================================================================
+
+For the inverse problem to be well-posed, the following conditions must be met:
+
+1. OSCILLATION VISIBILITY (Lower Bound on Thickness)
+   ────────────────────────────────────────────────
+   Condition: d > d_min = c / (2·n·Δν_bandwidth)
+   
+   Where:
+   - c = 3×10⁸ m/s (speed of light)
+   - Δν_bandwidth = measurement bandwidth (e.g., 2.5 THz for 0.5-3.0 THz)
+   
+   Rationale: Need at least 1-2 Fabry-Perot oscillations within measurement
+              band to reliably extract thickness from interference pattern.
+   
+   Example:
+   - Bandwidth = 2.5 THz, n = 1.5 → d_min ≈ 40 μm ✓
+   - Bandwidth = 2.5 THz, n = 3.0 → d_min ≈ 20 μm ✓
+   - Bandwidth = 2.5 THz, n = 7.0 → d_min ≈ 8.6 μm ✓
+   
+   Status: SATISFIED for d ≥ 100 μm across all n in range
+
+2. TIME-DOMAIN WINDOWING (Upper Bound on Thickness)
+   ────────────────────────────────────────────────
+   Condition: d < d_max = c·T_window / (2·n)
+   
+   Where:
+   - T_window = delay stage temporal range (MUST BE SPECIFIED)
+   - Round-trip echo time: τ_echo = 2nd/c
+   
+   Rationale: Internal reflections (echoes) must arrive within the measurement
+              window to observe Fabry-Perot oscillations. If echoes are cut off,
+              no interference pattern exists in frequency domain.
+   
+   Critical Dependency: d_max DECREASES as n INCREASES
+   
+   Example (T_window = 30 ps):
+   - n = 1.5 → d_max = 3000 μm ✓ (accommodates d ≤ 1000 μm)
+   - n = 3.0 → d_max = 1500 μm ✓ (accommodates d ≤ 1000 μm)
+   - n = 7.0 → d_max = 643 μm  ✗ (FAILS for d = 1000 μm)
+   
+   Example (T_window = 50 ps):
+   - n = 1.5 → d_max = 5000 μm ✓
+   - n = 3.0 → d_max = 2500 μm ✓
+   - n = 7.0 → d_max = 1071 μm ✓ (accommodates d ≤ 1000 μm)
+   
+   ** ACTION REQUIRED: Specify experimental T_window **
+   ** This determines valid (n, d) combinations **
+
+3. ABSORPTION LIMIT (Oscillation Damping)
+   ────────────────────────────────────────
+   Condition: κ·d << λ / (4π) ≈ 0.08·λ
+   
+   Where:
+   - λ = wavelength at measurement frequency
+   - At 1 THz: λ = 300 μm → threshold ≈ 24 μm
+   
+   Rationale: High absorption damps multiple reflections, reducing oscillation
+              visibility. When κ·d is large, thickness and absorption become
+              confounded (cannot separate them).
+   
+   Oscillation visibility: V ≈ exp(-4πκd/λ)
+   
+   Critical Regions:
+   - Low loss (κ < 0.02, d < 500 μm): κd < 10 μm ✓ Clear oscillations
+   - Medium loss (κ ≈ 0.05, d ≈ 500 μm): κd = 25 μm ~ Marginal
+   - High loss (κ ≈ 0.1, d ≈ 500 μm): κd = 50 μm ✗ Heavily damped
+   
+   Note: Problem becomes ILL-CONDITIONED in high-loss regime.
+         Network may conflate thickness and absorption.
+
+4. FREQUENCY SAMPLING (Nyquist for Oscillations)
+   ────────────────────────────────────────────────
+   Condition: Δf_sample < Δf_FSR / 2
+   
+   Where:
+   - Δf_FSR = c / (2nd) = free spectral range (fringe spacing)
+   - Need ≥2 points per oscillation period
+   
+   Example (d = 1000 μm, n = 1.5):
+   - Δf_FSR = 100 GHz → Need Δf_sample < 50 GHz
+   
+   Typical THz-TDS: Δf_sample ≈ 10-20 GHz ✓ SATISFIED
+   
+   Note: This is rarely a constraint for THz-TDS systems.
+
+5. REFRACTIVE INDEX CONTRAST (Reflection Strength)
+   ────────────────────────────────────────────────
+   Fresnel reflection coefficient: r = (n - 1)/(n + 1)
+   
+   Oscillation depth depends on reflection strength:
+   - n = 1.1 → r = 0.048 (weak, ~5% reflection)
+   - n = 1.5 → r = 0.200 (moderate, ~20% reflection)
+   - n = 3.0 → r = 0.500 (strong, ~50% reflection)
+   - n = 7.0 → r = 0.750 (very strong, ~75% reflection)
+   
+   Impact on Problem:
+   - Low n (1.1-1.5): Weak oscillations → thickness less certain
+   - High n (3.0-7.0): Strong oscillations → thickness well-determined
+   
+   Note: Not a hard constraint, but affects measurement SNR and accuracy.
+
+================================================================================
+WELL-CONDITIONED PARAMETER SPACE DEFINITION
+================================================================================
+
+The problem is WELL-CONDITIONED when all conditions are simultaneously met:
+
+Valid Region = {(n, κ, d) | ALL of the following hold:}
+
+1. d_min(n, Δν) < d < d_max(n, T_window)
+2. κ·d < threshold (e.g., 30 μm for conservative limit)
+3. n ∈ [1.1, 7.0], κ ∈ [-0.1, 0.01], d ∈ [100, 1000] μm
+
+CRITICAL UNKNOWNS (must be specified from experiment):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+□ T_window    = ??? ps  (delay stage range)
+□ Δν_bandwidth = ??? THz (e.g., 0.5-3.0 THz → 2.5 THz)
+□ Noise level  = ??? (SNR or noise std for training)
+
+PARAMETER SPACE CHARACTERIZATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Once T_window is specified, the parameter space splits into:
+
+Region A: "Well-Conditioned" 
+  - Clear Fabry-Perot oscillations present
+  - All echoes captured within time window
+  - Low to moderate absorption
+  - Thickness can be reliably extracted
+  → TRAIN ON THIS REGION
+
+Region B: "Ill-Conditioned"
+  - Echoes truncated (thick + high-n combinations)
+  - OR heavily damped (high absorption)
+  - OR too thin for oscillations
+  - Thickness poorly determined or indeterminate
+  → EXCLUDE FROM TRAINING or FLAG with uncertainty
+
+================================================================================
+PHYSICAL ASSUMPTIONS & SIMPLIFICATIONS
+================================================================================
+
+Material Model (Initial):
+  - Constant n(ω), κ(ω) across measurement bandwidth
+  - Homogeneous single layer
+  - Parallel, flat interfaces (no wedge angle)
+  - Normal incidence assumption
+  
+Future Extensions:
+  - Frequency-dependent n(ω), κ(ω) using polynomial/spline model
+  - Multi-layer samples (2, 3, 4, 5 layers)
+  - Non-normal incidence correction
+
+================================================================================
+DATA REQUIREMENTS
+================================================================================
+
+Training Data:
+  - Type: Simulated data from MTM forward model
+  - Noise: Additive noise to match experimental SNR (TBD)
+  - Distribution: Uniform sampling over VALID parameter space only
+  - Size: TBD (start with ~10k-50k samples)
+
+Validation Strategy:
+  - Hold-out test set from same simulated distribution
+  - Eventually: Real experimental data for fine-tuning/validation
+
+Input Representation (to be decided):
+  □ Option A: Time domain (ref_pulse, sample_pulse)
+  □ Option B: Frequency domain (magnitude, phase of T(ω))
+  □ Option C: Both time and frequency features
+  □ Option D: Transmission coefficient T(ω) = Sample/Reference
+
+================================================================================
+MODEL ARCHITECTURE CONSTRAINTS
+================================================================================
+
+Encoder Output: 3 parameters [n, κ, d]
+
+Output Activation Functions:
+  - n: 1.1 + 5.9·σ(x)  where σ is sigmoid → maps to [1.1, 7.0]
+  - κ: -0.1 + 0.11·σ(x) → maps to [-0.1, 0.01]
+  - d: 100 + 900·σ(x) → maps to [100, 1000] μm
+
+Physics Decoder:
+  - Uses existing differentiable MTM implementation
+  - Fixed (non-trainable) during training
+  - Provides gradient flow for encoder optimization
+
+Loss Function:
+  - Primary: MSE(T_predicted, T_measured) in frequency domain
+  - Optional: Parameter loss if ground truth available
+  - Optional: Smoothness regularization for future dispersion models
+
+================================================================================
+VALIDATION CRITERIA
+================================================================================
+
+The trained model should demonstrate:
+
+Accuracy Metrics:
+  - Mean Absolute Error (MAE) on n, κ, d separately
+  - Relative error: |predicted - true| / true
+  - R² score for regression quality
+
+Physical Consistency:
+  - Predicted parameters must produce transmission matching input
+  - No unphysical parameter combinations
+  - Gradual degradation in ill-conditioned regions (not catastrophic failure)
+
+Robustness:
+  - Performance under varying noise levels
+  - Generalization to held-out parameter combinations
+  - Stability across different material types
+
+Target Performance (Initial Goal):
+  - n: within ±5% of true value
+  - d: within ±10% of true value (harder to determine)
+  - κ: within ±20% of true value (most challenging)
+  
+Note: These targets may need adjustment based on physics-limited accuracy
+      in different parameter space regions.
+
+================================================================================
+DEPLOYMENT USE CASE
+================================================================================
+
+The trained encoder NN will serve as:
+  → Initial guess generator for gradient-based optimization loop
+  
+Workflow:
+  1. Measure reference and sample pulses
+  2. NN predicts rough parameters: (n₀, κ₀, d₀)
+  3. Use as starting point for iterative refinement (gradient descent/L-BFGS)
+  4. Converge to precise parameters
+
+Requirements:
+  - NN predictions must be "in the basin of attraction" for optimizer
+  - Don't need perfect accuracy, but must be reasonable starting point
+  - Fast inference (<100ms per sample)
+
+================================================================================
+OPEN QUESTIONS / TO BE DETERMINED
+================================================================================
+
+[ ] Experimental delay stage range (T_window)?
+[ ] Measurement bandwidth (e.g., 0.5-3.0 THz)?
+[ ] Typical experimental SNR or noise characteristics?
+[ ] Frequency sampling resolution (number of points)?
+[ ] Preference for time vs frequency domain input?
+[ ] Expected distribution of real samples (n, κ, d)?
+
+================================================================================
+REFERENCES & NOTES
+================================================================================
+
+Fabry-Perot Theory:
+  - Free spectral range: Δν = c/(2nd)
+  - Finesse: F = FSR / linewidth (depends on reflectivity and loss)
+
+THz-TDS Fundamentals:
+  - Typical bandwidth: 0.1-4 THz
+  - Delay stages: 10-100 ps range
+  - Dynamic range: 60-80 dB
+
+Material Examples (for reference):
+  - PTFE (Teflon): n ≈ 1.43, κ ≈ 0.001 (low loss)
+  - HDPE: n ≈ 1.52, κ ≈ 0.002 (low loss)
+  - Lactose: n ≈ 1.6, κ ≈ 0.01-0.1 (moderate loss)
+  - Silicon: n ≈ 3.4, κ ≈ 0.001 (high n, low loss)
+
+================================================================================
+REVISION HISTORY
+================================================================================
+
+v1.0 - 2025-01-17: Initial constraints document
+  - Single layer model
+  - Basic parameter ranges defined
+  - Well-posedness conditions outlined
+  - Awaiting experimental specifications
+
+================================================================================

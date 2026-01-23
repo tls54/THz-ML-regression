@@ -1,0 +1,37 @@
+{
+  "name": "cnn_tiny",
+  "description": "Tiny CNN for rapid prototyping and testing (~10K parameters)",
+
+  "network": {
+    "type": "cnn_scalable",
+    "width_mult": 0.5,
+    "num_blocks": 2,
+    "base_channels": 16,
+    "fc_hidden_dims": [64, 32],
+    "dropout": 0.2
+  },
+
+  "training": {
+    "num_epochs": 50,
+    "batch_size": 128,
+    "learning_rate": 1e-3,
+    "weight_decay": 1e-5,
+    "patience": 10
+  },
+
+  "loss": {
+    "type": "hybrid",
+    "alpha": 0.5,
+    "use_normalized_supervised_loss": true,
+    "physics_loss_scale": 1.0,
+    "param_weights": {
+      "n": 1.0,
+      "kappa": 1.0,
+      "d": 1.0
+    }
+  },
+
+  "dataset": {
+    "name": "production_v1"
+  }
+}

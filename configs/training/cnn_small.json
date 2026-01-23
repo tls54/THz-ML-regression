@@ -1,0 +1,37 @@
+{
+  "name": "cnn_small",
+  "description": "Small CNN baseline (~50K parameters)",
+
+  "network": {
+    "type": "cnn_scalable",
+    "width_mult": 0.75,
+    "num_blocks": 3,
+    "base_channels": 32,
+    "fc_hidden_dims": [128, 64],
+    "dropout": 0.2
+  },
+
+  "training": {
+    "num_epochs": 100,
+    "batch_size": 64,
+    "learning_rate": 1e-3,
+    "weight_decay": 1e-5,
+    "patience": 15
+  },
+
+  "loss": {
+    "type": "hybrid",
+    "alpha": 0.5,
+    "use_normalized_supervised_loss": true,
+    "physics_loss_scale": 1.0,
+    "param_weights": {
+      "n": 1.0,
+      "kappa": 1.0,
+      "d": 1.0
+    }
+  },
+
+  "dataset": {
+    "name": "production_v1"
+  }
+}

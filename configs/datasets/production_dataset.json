@@ -1,0 +1,49 @@
+{
+  "dataset_name": "production_v1",
+  "description": "Production example of THz transmission dataset with wide parameter coverage",
+
+  "simulation": {
+    "L": 4096,
+    "deltat": 1e-13,
+    "device": "mps"
+  },
+
+  "parameter_ranges": {
+    "n": {
+      "min": 1.1,
+      "max": 7.0,
+      "distribution": "uniform"
+    },
+    "kappa": {
+      "min": -0.1,
+      "max": 0.01,
+      "distribution": "uniform"
+    },
+    "d": {
+      "min": 100e-6,
+      "max": 1000e-6,
+      "distribution": "uniform"
+    }
+  },
+
+  "dataset_size": {
+    "train": 50000,
+    "val": 10000,
+    "test": 10000
+  },
+
+  "noise": {
+    "enabled": true,
+    "level": 1e-3,
+    "type": "gaussian"
+  },
+
+  "output": {
+    "save_time_domain": false,
+    "save_frequency_domain": true,
+    "save_ml_input": false,
+    "compression": true
+  },
+
+  "random_seed": 31
+}

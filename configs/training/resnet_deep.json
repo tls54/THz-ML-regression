@@ -1,0 +1,37 @@
+{
+  "name": "resnet_deep",
+  "description": "Deep ResNet for complex patterns (~1M parameters)",
+
+  "network": {
+    "type": "resnet_scalable",
+    "width_mult": 1.5,
+    "num_res_blocks": [3, 4, 3],
+    "base_channels": 64,
+    "fc_hidden_dims": [128],
+    "dropout": 0.3
+  },
+
+  "training": {
+    "num_epochs": 150,
+    "batch_size": 32,
+    "learning_rate": 5e-4,
+    "weight_decay": 1e-4,
+    "patience": 20
+  },
+
+  "loss": {
+    "type": "hybrid",
+    "alpha": 0.5,
+    "use_normalized_supervised_loss": true,
+    "physics_loss_scale": 1.0,
+    "param_weights": {
+      "n": 1.0,
+      "kappa": 1.0,
+      "d": 1.0
+    }
+  },
+
+  "dataset": {
+    "name": "production_v1"
+  }
+}
