@@ -20,31 +20,53 @@ from simulate import simulate_transmission_ml, get_transmission_features
 def load_trained_model(checkpoint_path, device='cpu'):
     """
     Load trained model from checkpoint.
-    
+
     Args:
         checkpoint_path: Path to checkpoint file
         device: Device to load on
-        
+
     Returns:
         model: Loaded model
         checkpoint: Full checkpoint dict
     """
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
+
     # Get network name from checkpoint
     network_name = checkpoint['network_name']
-    
-    # Create model
-    model = get_network(network_name).to(device)
-    
+
+    # Extract network config from checkpoint to reconstruct model with correct architecture
+    network_kwargs = {}
+    if 'config' in checkpoint and 'config' in checkpoint['config']:
+        saved_config = checkpoint['config']['config']
+
+        if network_name == 'resnet_scalable':
+            network_kwargs = {
+                'width_mult': saved_config.get('RESNET_WIDTH_MULT', 1.0),
+                'num_res_blocks': saved_config.get('RESNET_NUM_RES_BLOCKS', [2, 2, 2]),
+                'base_channels': saved_config.get('RESNET_BASE_CHANNELS', 64),
+                'fc_hidden_dims': saved_config.get('FC_HIDDEN_DIMS', [64]),
+                'dropout': saved_config.get('RESNET_DROPOUT', 0.2),
+            }
+        elif network_name == 'cnn_scalable':
+            network_kwargs = {
+                'width_mult': saved_config.get('CNN_WIDTH_MULT', 1.0),
+                'num_blocks': saved_config.get('CNN_NUM_BLOCKS', 4),
+                'base_channels': saved_config.get('CNN_BASE_CHANNELS', 32),
+                'fc_hidden_dims': saved_config.get('FC_HIDDEN_DIMS', [128, 64]),
+                'dropout': saved_config.get('CNN_DROPOUT', 0.2),
+            }
+
+    # Create model with saved config
+    model = get_network(network_name, **network_kwargs).to(device)
+
     # Load weights
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
+
     print(f"✓ Loaded {network_name} model from {checkpoint_path}")
     print(f"  Epoch: {checkpoint['epoch']}")
     print(f"  Best val loss: {checkpoint['best_val_loss']:.6f}")
-    
+
     return model, checkpoint
 
 
