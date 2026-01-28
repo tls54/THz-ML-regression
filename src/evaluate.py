@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from training_config import Config
 from networks import get_network
 from utils import (
-    generate_dataset, load_dataset, save_dataset,
+    load_dataset_from_datalake,
     THz_Dataset, compute_metrics, print_metrics
 )
 from simulate import simulate_transmission_ml, get_transmission_features
@@ -256,34 +256,28 @@ def evaluate_physics_consistency(model, test_data, config, device, n_samples=10)
     return fig
 
 
-def main(checkpoint_path, network_name='cnn'):
+def main(checkpoint_path, dataset_name='production_v1'):
     """
     Main evaluation function.
-    
+
     Args:
         checkpoint_path: Path to trained model checkpoint
-        network_name: Name of network architecture
+        dataset_name: Name of dataset in datalake to evaluate on
     """
     config = Config()
     device = torch.device(config.DEVICE if torch.cuda.is_available() else 'cpu')
-    
+
     print(f"{'='*60}")
     print(f"{'Model Evaluation':^60}")
     print(f"{'='*60}\n")
-    
+
     # Load model
     model, checkpoint = load_trained_model(checkpoint_path, device)
-    
-    # Generate or load test dataset
-    test_path = Path(config.DATA_DIR) / 'test_dataset.pt'
-    
-    if test_path.exists():
-        print("\nLoading existing test dataset...")
-        test_data = load_dataset(test_path, device='cpu')
-    else:
-        print("\nGenerating new test dataset...")
-        test_data = generate_dataset(config.TEST_SIZE, config, noise_level=None, device='cpu')
-        save_dataset(test_data, test_path)
+    network_name = checkpoint.get('network_name', 'unknown')
+
+    # Load test dataset from datalake
+    print(f"\nLoading test dataset: {dataset_name}")
+    test_data = load_dataset_from_datalake(dataset_name, split='test')
     
     # Create dataloader
     test_dataset = THz_Dataset(test_data['X'], test_data['y'])
@@ -332,14 +326,13 @@ def main(checkpoint_path, network_name='cnn'):
 
 if __name__ == '__main__':
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Evaluate trained THz model')
     parser.add_argument('checkpoint', type=str,
                        help='Path to model checkpoint')
-    parser.add_argument('--network', type=str, default='cnn',
-                       choices=['cnn', 'resnet', 'multiscale', 'mlp'],
-                       help='Network architecture')
-    
+    parser.add_argument('--dataset', type=str, default='production_v1',
+                       help='Dataset name in datalake')
+
     args = parser.parse_args()
-    
-    main(args.checkpoint, args.network)
+
+    main(args.checkpoint, args.dataset)
