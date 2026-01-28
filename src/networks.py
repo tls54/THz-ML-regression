@@ -534,3 +534,112 @@ def get_network(name, config=None, **kwargs):
             kwargs.setdefault('dropout', config.RESNET_DROPOUT)
 
     return NETWORKS[name](**kwargs)
+
+
+def model_summary(model, print_output=True):
+    """
+    Print a clean summary of the model architecture.
+
+    Args:
+        model: PyTorch model instance
+        print_output: If True, prints the summary. If False, returns as string.
+
+    Returns:
+        Summary string if print_output=False
+    """
+    lines = []
+    model_name = model.__class__.__name__
+
+    # Header
+    lines.append("=" * 60)
+    lines.append(f"{model_name}".center(60))
+    lines.append("=" * 60)
+
+    # Parameter count
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    lines.append(f"\nParameters: {trainable_params:,} trainable / {total_params:,} total")
+
+    # Architecture details based on model type
+    if isinstance(model, THz_Encoder_ResNet_Scalable):
+        lines.append(f"\nArchitecture: ResNet-style with skip connections")
+        lines.append(f"  Width multiplier: {model.width_mult}")
+
+        # Extract stage info
+        lines.append(f"\nConvolutional Backbone:")
+        lines.append(f"  Input: [batch, 2, n_freq] (real + imag)")
+
+        # Initial conv
+        init_conv = model.conv_init[0]
+        lines.append(f"  Initial: Conv1d(2 → {init_conv.out_channels}, k={init_conv.kernel_size[0]}) → MaxPool")
+
+        # Stages
+        for i, stage in enumerate(model.stages):
+            res_blocks = sum(1 for m in stage if isinstance(m, ResidualBlock))
+            # Find channel count from first ResidualBlock
+            for m in stage:
+                if isinstance(m, ResidualBlock):
+                    channels = m.conv1.out_channels
+                    kernel = m.conv1.kernel_size[0]
+                    break
+            has_pool = any(isinstance(m, nn.MaxPool1d) for m in stage)
+            pool_str = " → MaxPool" if has_pool else ""
+            lines.append(f"  Stage {i+1}: {res_blocks}x ResBlock({channels}ch, k={kernel}){pool_str}")
+
+        lines.append(f"  Global: AdaptiveAvgPool1d(1)")
+
+        # FC head
+        lines.append(f"\nFC Head:")
+        fc_dims = []
+        for m in model.fc_layers:
+            if isinstance(m, nn.Linear):
+                fc_dims.append((m.in_features, m.out_features))
+        for i, (in_f, out_f) in enumerate(fc_dims):
+            if i < len(fc_dims) - 1:
+                lines.append(f"  Linear({in_f} → {out_f}) → ReLU → Dropout")
+            else:
+                lines.append(f"  Linear({in_f} → {out_f}) → Output")
+
+    elif isinstance(model, THz_Encoder_CNN_Scalable):
+        lines.append(f"\nArchitecture: Scalable CNN")
+        lines.append(f"  Width multiplier: {model.width_mult}")
+        lines.append(f"  Num blocks: {model.num_blocks}")
+
+        lines.append(f"\nConvolutional Backbone:")
+        lines.append(f"  Input: [batch, 2, n_freq] (real + imag)")
+
+        # Extract conv layers
+        block_idx = 0
+        for i, m in enumerate(model.conv_layers):
+            if isinstance(m, nn.Conv1d):
+                block_idx += 1
+                lines.append(f"  Block {block_idx}: Conv1d({m.in_channels} → {m.out_channels}, k={m.kernel_size[0]}) → BN → ReLU → MaxPool")
+
+        lines.append(f"  Global: AdaptiveAvgPool1d(1)")
+
+        # FC head
+        lines.append(f"\nFC Head:")
+        fc_dims = []
+        for m in model.fc_layers:
+            if isinstance(m, nn.Linear):
+                fc_dims.append((m.in_features, m.out_features))
+        for i, (in_f, out_f) in enumerate(fc_dims):
+            if i < len(fc_dims) - 1:
+                lines.append(f"  Linear({in_f} → {out_f}) → ReLU → Dropout")
+            else:
+                lines.append(f"  Linear({in_f} → {out_f}) → Output")
+
+    elif isinstance(model, (THz_Encoder_CNN, THz_Encoder_ResNet, THz_Encoder_MultiScale, THz_Encoder_MLP)):
+        # Generic summary for non-scalable models
+        lines.append(f"\nArchitecture: {model_name.replace('THz_Encoder_', '')}")
+        lines.append(f"  (Use print(model) for detailed layer info)")
+
+    # Output info
+    lines.append(f"\nOutput: [batch, 3] → [n, κ, d] (sigmoid-scaled to physical ranges)")
+    lines.append("=" * 60)
+
+    summary = "\n".join(lines)
+
+    if print_output:
+        print(summary)
+    return summary
