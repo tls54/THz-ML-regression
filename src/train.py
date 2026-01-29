@@ -254,10 +254,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=
             # Backward pass with scaler
             if scaler is not None:
                 scaler.scale(loss).backward()
+                # Unscale gradients and clip to prevent explosion
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
         else:
             # Standard FP32 forward pass
@@ -271,6 +275,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=
                 loss = criterion(y_pred, y, T)
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         total_loss += loss.item()
@@ -645,7 +650,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                     amp_dtype = torch.float16
 
             if config.GRAD_SCALER:
-                scaler = GradScaler()
+                # Start with conservative scale to avoid early NaNs
+                scaler = GradScaler(init_scale=1024.0, growth_interval=2000)
             print(f"Mixed precision enabled: {config.AMP_DTYPE}" +
                   (f" with GradScaler" if scaler else ""))
     
