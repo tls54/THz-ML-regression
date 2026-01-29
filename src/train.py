@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.amp import autocast, GradScaler
 from pathlib import Path
 import time
 import json
@@ -15,6 +16,54 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from training_config import Config
+
+
+def get_amp_dtype(dtype_str):
+    """Convert dtype string to torch dtype for AMP."""
+    dtype_map = {
+        'float16': torch.float16,
+        'bfloat16': torch.bfloat16,
+        'float32': torch.float32,
+    }
+    return dtype_map.get(dtype_str, torch.float16)
+
+
+def get_amp_context(config, device):
+    """
+    Get the appropriate autocast context manager based on config.
+
+    Returns:
+        (autocast_context, scaler_or_none)
+    """
+    if not config.USE_AMP or device.type == 'cpu':
+        # No AMP - return dummy context and no scaler
+        return torch.amp.autocast(device.type, enabled=False), None
+
+    amp_dtype = get_amp_dtype(config.AMP_DTYPE)
+
+    # Check hardware compatibility
+    if amp_dtype == torch.bfloat16 and device.type == 'cuda':
+        # bfloat16 requires Ampere (compute capability 8.0+) or newer
+        if torch.cuda.get_device_capability()[0] < 8:
+            print(f"Warning: bfloat16 not supported on this GPU (compute capability < 8.0)")
+            print(f"  Falling back to float16")
+            amp_dtype = torch.float16
+            config.AMP_DTYPE = 'float16'
+            config.GRAD_SCALER = True  # float16 needs scaler
+
+    # Create autocast context
+    autocast_ctx = torch.amp.autocast(device.type, dtype=amp_dtype)
+
+    # GradScaler is required for float16, optional for bfloat16
+    if config.GRAD_SCALER and amp_dtype == torch.float16:
+        scaler = GradScaler()
+    elif config.GRAD_SCALER and amp_dtype == torch.bfloat16:
+        # bfloat16 doesn't need scaler but can use it
+        scaler = GradScaler()
+    else:
+        scaler = None
+
+    return autocast_ctx, scaler
 from networks import get_network
 from utils import (
     load_dataset_from_datalake, list_available_datasets,
@@ -160,11 +209,19 @@ def get_loss_function(config):
         raise ValueError(f"Unknown loss type: {config.LOSS_TYPE}")
 
 
-def train_epoch(model, dataloader, criterion, optimizer, device, config):
-    """Train for one epoch."""
+def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=None):
+    """Train for one epoch with optional mixed precision."""
     model.train()
     total_loss = 0
-    
+
+    # AMP supported on CUDA and MPS (with limitations)
+    # MPS only supports float16, not bfloat16
+    use_amp = config.USE_AMP and device.type in ('cuda', 'mps')
+    if use_amp and device.type == 'mps':
+        amp_dtype = torch.float16  # MPS only supports float16
+    else:
+        amp_dtype = get_amp_dtype(config.AMP_DTYPE) if use_amp else torch.float32
+
     pbar = tqdm(dataloader, desc="Training")
     for batch_idx, batch_data in enumerate(pbar):
         if len(batch_data) == 3:
@@ -174,38 +231,79 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config):
             X, y = batch_data
             X, y = X.to(device), y.to(device)
             T = None
-        
-        # Forward pass
-        y_pred = model(X)
-        
-        # Compute loss
-        if config.LOSS_TYPE == 'supervised':
-            loss = criterion(y_pred, y)
-        elif config.LOSS_TYPE == 'physics':
-            loss = criterion(y_pred, T)
-        else:  # hybrid
-            loss = criterion(y_pred, y, T)
-        
-        # Backward pass
+
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
+
+        if use_amp:
+            # Mixed precision forward pass
+            with autocast(device.type, dtype=amp_dtype):
+                y_pred = model(X)
+
+                # Supervised loss can stay in autocast
+                if config.LOSS_TYPE == 'supervised':
+                    loss = criterion(y_pred, y)
+                elif config.LOSS_TYPE == 'physics':
+                    # Physics loss uses complex numbers - compute outside autocast
+                    pass
+                else:  # hybrid - supervised part in autocast
+                    pass
+
+            # Physics loss needs FP32 due to complex number operations
+            if config.LOSS_TYPE == 'physics':
+                loss = criterion(y_pred.float(), T)
+            elif config.LOSS_TYPE == 'hybrid':
+                # Hybrid: supervised in AMP precision, physics in FP32
+                with autocast(device.type, dtype=amp_dtype):
+                    loss_supervised = criterion.supervised_loss(y_pred, y)
+                # Physics loss in FP32
+                loss_physics = criterion.physics_loss(y_pred.float(), T)
+                loss_physics_scaled = criterion.physics_scale * loss_physics
+                loss = criterion.alpha * loss_supervised + (1 - criterion.alpha) * loss_physics_scaled
+
+            # Backward pass with scaler
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+        else:
+            # Standard FP32 forward pass
+            y_pred = model(X)
+
+            if config.LOSS_TYPE == 'supervised':
+                loss = criterion(y_pred, y)
+            elif config.LOSS_TYPE == 'physics':
+                loss = criterion(y_pred, T)
+            else:  # hybrid
+                loss = criterion(y_pred, y, T)
+
+            loss.backward()
+            optimizer.step()
+
         total_loss += loss.item()
-        
+
         # Update progress bar
         pbar.set_postfix({'loss': f'{loss.item():.6f}'})
-    
+
     return total_loss / len(dataloader)
 
 
 def validate(model, dataloader, criterion, device, config):
-    """Validate model."""
+    """Validate model with optional mixed precision."""
     model.eval()
     total_loss = 0
     all_preds = []
     all_targets = []
-    
+
+    # AMP supported on CUDA and MPS (MPS only supports float16)
+    use_amp = config.USE_AMP and device.type in ('cuda', 'mps')
+    if use_amp and device.type == 'mps':
+        amp_dtype = torch.float16
+    else:
+        amp_dtype = get_amp_dtype(config.AMP_DTYPE) if use_amp else torch.float32
+
     with torch.no_grad():
         for batch_data in dataloader:
             if len(batch_data) == 3:
@@ -215,21 +313,37 @@ def validate(model, dataloader, criterion, device, config):
                 X, y = batch_data
                 X, y = X.to(device), y.to(device)
                 T = None
-            
-            y_pred = model(X)
-            
-            # Compute loss
-            if config.LOSS_TYPE == 'supervised':
-                loss = criterion(y_pred, y)
-            elif config.LOSS_TYPE == 'physics':
-                loss = criterion(y_pred, T)
-            else:  # hybrid
-                loss = criterion(y_pred, y, T)
-            
+
+            if use_amp:
+                with autocast(device.type, dtype=amp_dtype):
+                    y_pred = model(X)
+
+                    if config.LOSS_TYPE == 'supervised':
+                        loss = criterion(y_pred, y)
+
+                # Physics/hybrid loss in FP32
+                if config.LOSS_TYPE == 'physics':
+                    loss = criterion(y_pred.float(), T)
+                elif config.LOSS_TYPE == 'hybrid':
+                    with autocast(device.type, dtype=amp_dtype):
+                        loss_supervised = criterion.supervised_loss(y_pred, y)
+                    loss_physics = criterion.physics_loss(y_pred.float(), T)
+                    loss_physics_scaled = criterion.physics_scale * loss_physics
+                    loss = criterion.alpha * loss_supervised + (1 - criterion.alpha) * loss_physics_scaled
+            else:
+                y_pred = model(X)
+
+                if config.LOSS_TYPE == 'supervised':
+                    loss = criterion(y_pred, y)
+                elif config.LOSS_TYPE == 'physics':
+                    loss = criterion(y_pred, T)
+                else:  # hybrid
+                    loss = criterion(y_pred, y, T)
+
             total_loss += loss.item()
-            all_preds.append(y_pred.cpu())
+            all_preds.append(y_pred.float().cpu())  # Ensure FP32 for metrics
             all_targets.append(y.cpu())
-    
+
     # Compute metrics
     all_preds = torch.cat(all_preds, dim=0)
     all_targets = torch.cat(all_targets, dim=0)
@@ -516,6 +630,35 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5
     )
+
+    # Setup mixed precision training
+    scaler = None
+    if config.USE_AMP and device.type in ('cuda', 'mps'):
+        amp_dtype = get_amp_dtype(config.AMP_DTYPE)
+
+        # Check hardware compatibility
+        if device.type == 'mps':
+            # MPS only supports float16, no bfloat16
+            if amp_dtype == torch.bfloat16:
+                print(f"Warning: bfloat16 not supported on MPS, using float16")
+                config.AMP_DTYPE = 'float16'
+                amp_dtype = torch.float16
+            # MPS doesn't need GradScaler (no underflow issues like CUDA FP16)
+            scaler = None
+            print(f"Mixed precision enabled: float16 (MPS)")
+        elif device.type == 'cuda':
+            # Check for bfloat16 support (requires Ampere+)
+            if amp_dtype == torch.bfloat16:
+                if torch.cuda.get_device_capability()[0] < 8:
+                    print(f"Warning: bfloat16 not supported on this GPU, falling back to float16")
+                    config.AMP_DTYPE = 'float16'
+                    config.GRAD_SCALER = True
+                    amp_dtype = torch.float16
+
+            if config.GRAD_SCALER:
+                scaler = GradScaler()
+            print(f"Mixed precision enabled: {config.AMP_DTYPE}" +
+                  (f" with GradScaler" if scaler else ""))
     
     # Resume from checkpoint if provided
     start_epoch = 0
@@ -565,8 +708,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         print(f"{'-'*60}")
         
         # Train
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, config)
-        
+        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, config, scaler)
+
         # Validate
         val_loss, val_metrics = validate(model, val_loader, criterion, device, config)
         

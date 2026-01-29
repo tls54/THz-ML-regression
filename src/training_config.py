@@ -68,6 +68,11 @@ class Config:
     # Hardware
     DEVICE = 'cuda'  # or 'cpu'
     NUM_WORKERS = 4
+
+    # Mixed Precision Training
+    USE_AMP = False  # Enable automatic mixed precision
+    AMP_DTYPE = 'float16'  # 'float16' (T4/V100), 'bfloat16' (A100/H100/RTX 30+), or 'float32' (disabled)
+    GRAD_SCALER = True  # Use GradScaler (required for float16, optional for bfloat16)
     
     # Logging
     LOG_INTERVAL = 100  # Log every N batches
