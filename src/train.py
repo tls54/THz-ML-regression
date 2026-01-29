@@ -235,30 +235,21 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=
         optimizer.zero_grad()
 
         if use_amp:
-            # Mixed precision forward pass
+            # Mixed precision: network forward in FP16, all losses in FP32
+            # This is more stable for physics-informed training
             with autocast(device.type, dtype=amp_dtype):
                 y_pred = model(X)
 
-                # Supervised loss can stay in autocast
-                if config.LOSS_TYPE == 'supervised':
-                    loss = criterion(y_pred, y)
-                elif config.LOSS_TYPE == 'physics':
-                    # Physics loss uses complex numbers - compute outside autocast
-                    pass
-                else:  # hybrid - supervised part in autocast
-                    pass
+            # Cast predictions to FP32 for loss computation (more stable)
+            y_pred_f32 = y_pred.float()
 
-            # Physics loss needs FP32 due to complex number operations
-            if config.LOSS_TYPE == 'physics':
-                loss = criterion(y_pred.float(), T)
-            elif config.LOSS_TYPE == 'hybrid':
-                # Hybrid: supervised in AMP precision, physics in FP32
-                with autocast(device.type, dtype=amp_dtype):
-                    loss_supervised = criterion.supervised_loss(y_pred, y)
-                # Physics loss in FP32
-                loss_physics = criterion.physics_loss(y_pred.float(), T)
-                loss_physics_scaled = criterion.physics_scale * loss_physics
-                loss = criterion.alpha * loss_supervised + (1 - criterion.alpha) * loss_physics_scaled
+            # All loss computation in FP32 for numerical stability
+            if config.LOSS_TYPE == 'supervised':
+                loss = criterion(y_pred_f32, y)
+            elif config.LOSS_TYPE == 'physics':
+                loss = criterion(y_pred_f32, T)
+            else:  # hybrid
+                loss = criterion(y_pred_f32, y, T)
 
             # Backward pass with scaler
             if scaler is not None:
@@ -315,21 +306,19 @@ def validate(model, dataloader, criterion, device, config):
                 T = None
 
             if use_amp:
+                # Mixed precision: network forward in FP16, all losses in FP32
                 with autocast(device.type, dtype=amp_dtype):
                     y_pred = model(X)
 
-                    if config.LOSS_TYPE == 'supervised':
-                        loss = criterion(y_pred, y)
+                # Cast predictions to FP32 for loss computation
+                y_pred_f32 = y_pred.float()
 
-                # Physics/hybrid loss in FP32
-                if config.LOSS_TYPE == 'physics':
-                    loss = criterion(y_pred.float(), T)
-                elif config.LOSS_TYPE == 'hybrid':
-                    with autocast(device.type, dtype=amp_dtype):
-                        loss_supervised = criterion.supervised_loss(y_pred, y)
-                    loss_physics = criterion.physics_loss(y_pred.float(), T)
-                    loss_physics_scaled = criterion.physics_scale * loss_physics
-                    loss = criterion.alpha * loss_supervised + (1 - criterion.alpha) * loss_physics_scaled
+                if config.LOSS_TYPE == 'supervised':
+                    loss = criterion(y_pred_f32, y)
+                elif config.LOSS_TYPE == 'physics':
+                    loss = criterion(y_pred_f32, T)
+                else:  # hybrid
+                    loss = criterion(y_pred_f32, y, T)
             else:
                 y_pred = model(X)
 
