@@ -32,7 +32,7 @@ datalake/
 .ipynb_checkpoints/
 
 # Generated plots (regenerable)
-*.png
+
 
 # Archives 
 ARCHIVE/
