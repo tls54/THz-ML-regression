@@ -13,10 +13,12 @@
 
   "training": {
     "num_epochs": 100,
-    "batch_size": 64,
+    "batch_size": 256,
     "learning_rate": 1e-4,
     "weight_decay": 1e-5,
-    "patience": 15
+    "patience": 15,
+    "scheduler_patience": 10,
+    "scheduler_factor": 0.5
   },
 
   "loss": {
@@ -36,8 +38,8 @@
   },
 
   "precision": {
-    "use_amp": true,
-    "dtype": "float16",
-    "grad_scaler": true
+    "use_amp": false,
+    "dtype": "float32",
+    "grad_scaler": false
   }
 }

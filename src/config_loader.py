@@ -77,6 +77,8 @@ def load_training_config(config_name, config_dir=None):
         config.LEARNING_RATE = train.get('learning_rate', config.LEARNING_RATE)
         config.WEIGHT_DECAY = train.get('weight_decay', config.WEIGHT_DECAY)
         config.PATIENCE = train.get('patience', config.PATIENCE)
+        config.SCHEDULER_PATIENCE = train.get('scheduler_patience', config.SCHEDULER_PATIENCE)
+        config.SCHEDULER_FACTOR = train.get('scheduler_factor', config.SCHEDULER_FACTOR)
 
     # Apply loss settings
     if 'loss' in config_dict:
@@ -162,7 +164,9 @@ def print_config_summary(config):
     print(f"  Batch size: {config.BATCH_SIZE}")
     print(f"  Learning rate: {config.LEARNING_RATE}")
     print(f"  Weight decay: {config.WEIGHT_DECAY}")
-    print(f"  Patience: {config.PATIENCE}")
+    print(f"  Early stop patience: {config.PATIENCE}")
+    print(f"  Scheduler patience: {config.SCHEDULER_PATIENCE}")
+    print(f"  Scheduler factor: {config.SCHEDULER_FACTOR}")
 
     print(f"\nLoss Function:")
     print(f"  Type: {config.LOSS_TYPE}")

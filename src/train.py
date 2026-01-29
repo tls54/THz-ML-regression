@@ -254,14 +254,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=
             # Backward pass with scaler
             if scaler is not None:
                 scaler.scale(loss).backward()
-                # Unscale gradients and clip to prevent explosion
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
         else:
             # Standard FP32 forward pass
@@ -275,7 +271,6 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config, scaler=
                 loss = criterion(y_pred, y, T)
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
         total_loss += loss.item()
@@ -497,38 +492,64 @@ def plot_training_history(history, save_path=None):
         ax.axhline(y=0.9, color='gray', linestyle='--', alpha=0.3, linewidth=1)
         ax.axhline(y=0.95, color='gray', linestyle='--', alpha=0.3, linewidth=1)
 
-    # Row 2, Col 3: Final Metrics Summary (Text)
+    # Row 2, Col 3: Learning Rate Schedule
     ax = axes[1, 2]
-    ax.axis('off')
 
-    # Get final epoch metrics
-    final_metrics = history['val_metrics'][-1]
+    # Check if learning rate history is available
+    if 'learning_rate' in history and len(history['learning_rate']) > 0:
+        lr_history = history['learning_rate']
+        ax.plot(epochs, lr_history, 'purple', linewidth=2, marker='o', markersize=3, alpha=0.8)
+        ax.set_xlabel('Epoch', fontsize=11)
+        ax.set_ylabel('Learning Rate', fontsize=11)
+        ax.set_title('Learning Rate Schedule', fontsize=12, fontweight='bold')
+        ax.set_yscale('log')
+        ax.grid(True, alpha=0.3)
 
-    summary_text = "Final Validation Metrics\n" + "="*30 + "\n\n"
-    summary_text += f"Refractive Index (n):\n"
-    summary_text += f"  MAE:  {final_metrics['n_mae']:.5f}\n"
-    summary_text += f"  RMSE: {final_metrics['n_rmse']:.5f}\n"
-    summary_text += f"  R²:   {final_metrics['n_r2']:.4f}\n\n"
+        # Mark LR reductions
+        for i in range(1, len(lr_history)):
+            if lr_history[i] < lr_history[i-1]:
+                ax.axvline(x=i+1, color='red', linestyle='--', alpha=0.3, linewidth=1)
 
-    summary_text += f"Extinction Coeff (κ):\n"
-    summary_text += f"  MAE:  {final_metrics['kappa_mae']:.6f}\n"
-    summary_text += f"  RMSE: {final_metrics['kappa_rmse']:.6f}\n"
-    summary_text += f"  R²:   {final_metrics['kappa_r2']:.4f}\n\n"
+        # Add final LR annotation
+        final_lr = lr_history[-1]
+        initial_lr = lr_history[0]
+        ax.annotate(f'Final: {final_lr:.2e}', xy=(epochs[-1], final_lr),
+                   xytext=(-50, 10), textcoords='offset points',
+                   fontsize=9, color='purple')
+        if final_lr != initial_lr:
+            reduction_factor = initial_lr / final_lr
+            ax.set_title(f'Learning Rate Schedule ({reduction_factor:.1f}x reduction)',
+                        fontsize=12, fontweight='bold')
+    else:
+        # Fallback: show text summary if no LR history
+        ax.axis('off')
+        final_metrics = history['val_metrics'][-1]
 
-    summary_text += f"Thickness (d):\n"
-    summary_text += f"  MAE:  {final_metrics['d_um_mae']:.2f} μm\n"
-    summary_text += f"  RMSE: {final_metrics['d_um_rmse']:.2f} μm\n"
-    summary_text += f"  R²:   {final_metrics['d_um_r2']:.4f}\n\n"
+        summary_text = "Final Validation Metrics\n" + "="*30 + "\n\n"
+        summary_text += f"Refractive Index (n):\n"
+        summary_text += f"  MAE:  {final_metrics['n_mae']:.5f}\n"
+        summary_text += f"  RMSE: {final_metrics['n_rmse']:.5f}\n"
+        summary_text += f"  R²:   {final_metrics['n_r2']:.4f}\n\n"
 
-    summary_text += "="*30 + "\n"
-    summary_text += f"Total Epochs: {len(epochs)}\n"
-    summary_text += f"Best Epoch: {best_epoch}\n"
-    summary_text += f"Best Val Loss: {best_val_loss:.6f}\n"
-    summary_text += f"Final Val Loss: {history['val_loss'][-1]:.6f}"
+        summary_text += f"Extinction Coeff (κ):\n"
+        summary_text += f"  MAE:  {final_metrics['kappa_mae']:.6f}\n"
+        summary_text += f"  RMSE: {final_metrics['kappa_rmse']:.6f}\n"
+        summary_text += f"  R²:   {final_metrics['kappa_r2']:.4f}\n\n"
 
-    ax.text(0.1, 0.95, summary_text, transform=ax.transAxes,
-            fontsize=10, verticalalignment='top', family='monospace',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+        summary_text += f"Thickness (d):\n"
+        summary_text += f"  MAE:  {final_metrics['d_um_mae']:.2f} μm\n"
+        summary_text += f"  RMSE: {final_metrics['d_um_rmse']:.2f} μm\n"
+        summary_text += f"  R²:   {final_metrics['d_um_r2']:.4f}\n\n"
+
+        summary_text += "="*30 + "\n"
+        summary_text += f"Total Epochs: {len(epochs)}\n"
+        summary_text += f"Best Epoch: {best_epoch}\n"
+        summary_text += f"Best Val Loss: {best_val_loss:.6f}\n"
+        summary_text += f"Final Val Loss: {history['val_loss'][-1]:.6f}"
+
+        ax.text(0.1, 0.95, summary_text, transform=ax.transAxes,
+                fontsize=10, verticalalignment='top', family='monospace',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
 
     plt.tight_layout()
 
@@ -622,7 +643,9 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         weight_decay=config.WEIGHT_DECAY
     )
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+        optimizer, mode='min',
+        factor=config.SCHEDULER_FACTOR,
+        patience=config.SCHEDULER_PATIENCE
     )
 
     # Setup mixed precision training
@@ -650,8 +673,7 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                     amp_dtype = torch.float16
 
             if config.GRAD_SCALER:
-                # Start with conservative scale to avoid early NaNs
-                scaler = GradScaler(init_scale=1024.0, growth_interval=2000)
+                scaler = GradScaler()
             print(f"Mixed precision enabled: {config.AMP_DTYPE}" +
                   (f" with GradScaler" if scaler else ""))
     
@@ -673,7 +695,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     history = {
         'train_loss': [],
         'val_loss': [],
-        'val_metrics': []
+        'val_metrics': [],
+        'learning_rate': []
     }
     
     # Save config for this run
@@ -710,17 +733,22 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         
         # Update scheduler
         scheduler.step(val_loss)
-        
+
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+
         # Save history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['val_metrics'].append(val_metrics)
+        history['learning_rate'].append(current_lr)
         
         # Print epoch summary
         epoch_time = time.time() - epoch_start
         print(f"\nEpoch {epoch+1} Summary:")
         print(f"  Train Loss: {train_loss:.6f}")
         print(f"  Val Loss:   {val_loss:.6f}")
+        print(f"  LR:         {current_lr:.2e}")
         print(f"  Time: {epoch_time:.1f}s")
         print_metrics(val_metrics, title="Validation Metrics")
         
@@ -803,7 +831,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
             'val_metrics': [
                 {k: float(v) for k, v in m.items()}
                 for m in history['val_metrics']
-            ]
+            ],
+            'learning_rate': history['learning_rate']
         }
         json.dump(history_json, f, indent=2)
     print(f"✓ Saved training history to {history_path}")

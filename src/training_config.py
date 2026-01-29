@@ -81,6 +81,10 @@ class Config:
     # Early stopping
     PATIENCE = 15  # Stop if no improvement for N epochs
     MIN_DELTA = 1e-6  # Minimum improvement to count
+
+    # Learning rate scheduler
+    SCHEDULER_PATIENCE = 10  # Epochs to wait before reducing LR
+    SCHEDULER_FACTOR = 0.5  # Factor to reduce LR by
     
     @classmethod
     def get_freq_info(cls):
