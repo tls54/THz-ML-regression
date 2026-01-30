@@ -1,6 +1,6 @@
 {
   "name": "resnet_base",
-  "description": "Base ResNet with skip connections (~250K parameters)",
+  "description": "Base ResNet with skip connections (~1.2M parameters)",
 
   "network": {
     "type": "resnet_scalable",

@@ -53,6 +53,8 @@ def load_training_config(config_name, config_dir=None):
     if 'network' in config_dict:
         net = config_dict['network']
 
+        config._network_type = net.get('type', 'cnn_scalable')
+
         if net.get('type') == 'cnn_scalable':
             config.CNN_WIDTH_MULT = net.get('width_mult', 1.0)
             config.CNN_NUM_BLOCKS = net.get('num_blocks', 4)
@@ -151,12 +153,21 @@ def print_config_summary(config):
             print(f"  {config._config_description}")
 
     print(f"\nNetwork:")
-    print(f"  Type: Scalable CNN")
-    print(f"  Width multiplier: {config.CNN_WIDTH_MULT}")
-    print(f"  Number of blocks: {config.CNN_NUM_BLOCKS}")
-    print(f"  Base channels: {config.CNN_BASE_CHANNELS}")
-    print(f"  FC hidden dims: {config.FC_HIDDEN_DIMS}")
-    print(f"  Dropout: {config.CNN_DROPOUT}")
+    network_type = getattr(config, '_network_type', 'cnn_scalable')
+    if network_type == 'resnet_scalable':
+        print(f"  Type: ResNet Scalable")
+        print(f"  Width multiplier: {config.RESNET_WIDTH_MULT}")
+        print(f"  Residual blocks: {config.RESNET_NUM_RES_BLOCKS}")
+        print(f"  Base channels: {config.RESNET_BASE_CHANNELS}")
+        print(f"  FC hidden dims: {config.FC_HIDDEN_DIMS}")
+        print(f"  Dropout: {config.RESNET_DROPOUT}")
+    else:
+        print(f"  Type: Scalable CNN")
+        print(f"  Width multiplier: {config.CNN_WIDTH_MULT}")
+        print(f"  Number of blocks: {config.CNN_NUM_BLOCKS}")
+        print(f"  Base channels: {config.CNN_BASE_CHANNELS}")
+        print(f"  FC hidden dims: {config.FC_HIDDEN_DIMS}")
+        print(f"  Dropout: {config.CNN_DROPOUT}")
 
     print(f"\nTraining:")
     print(f"  Dataset: {config.DATASET_NAME}")
