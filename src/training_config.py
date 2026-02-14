@@ -76,6 +76,7 @@ class Config:
     # Hardware
     DEVICE = 'cuda'  # or 'cpu'
     NUM_WORKERS = 4
+    DTYPE = 'float32'  # 'float32' or 'float64' (double precision)
 
     # Logging
     LOG_INTERVAL = 100  # Log every N batches

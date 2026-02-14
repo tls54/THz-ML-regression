@@ -16,6 +16,17 @@ import numpy as np
 
 from training_config import Config
 from networks import get_network
+
+
+def get_dtype(dtype_str):
+    """Convert dtype string to torch dtype."""
+    dtype_map = {
+        'float32': torch.float32,
+        'float64': torch.float64,
+    }
+    if dtype_str not in dtype_map:
+        raise ValueError(f"Unknown dtype: {dtype_str}. Choose from {list(dtype_map.keys())}")
+    return dtype_map[dtype_str]
 from utils import (
     load_dataset_from_datalake, list_available_datasets,
     THz_Dataset, compute_metrics, print_metrics
@@ -578,10 +589,14 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     print(f"\nLoading dataset: {config.DATASET_NAME}")
     train_data = load_dataset_from_datalake(config.DATASET_NAME, 'train')
     val_data = load_dataset_from_datalake(config.DATASET_NAME, 'val')
-    
+
+    # Get dtype from config
+    dtype = get_dtype(getattr(config, 'DTYPE', 'float32'))
+    print(f"Using dtype: {dtype}")
+
     # Create datasets and dataloaders
-    train_dataset = THz_Dataset(train_data['X'], train_data['y'], train_data['T'])
-    val_dataset = THz_Dataset(val_data['X'], val_data['y'], val_data['T'])
+    train_dataset = THz_Dataset(train_data['X'], train_data['y'], train_data['T'], dtype=dtype)
+    val_dataset = THz_Dataset(val_data['X'], val_data['y'], val_data['T'], dtype=dtype)
     
     train_loader = DataLoader(
         train_dataset, 
@@ -601,7 +616,7 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     
     # Create model
     print(f"\nInitializing {network_name} network...")
-    model = get_network(network_name).to(device)
+    model = get_network(network_name).to(device=device, dtype=dtype)
     print(f"Model parameters: {model.count_parameters():,}")
     
     # Loss and optimizer

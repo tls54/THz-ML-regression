@@ -179,19 +179,23 @@ def get_dataset_info(dataset_name, datalake_root=None):
 
 class THz_Dataset(torch.utils.data.Dataset):
     """PyTorch Dataset for THz spectroscopy."""
-    
-    def __init__(self, X, y, T=None):
+
+    def __init__(self, X, y, T=None, dtype=torch.float32):
         """
         Args:
             X: Input tensors [n_samples, 2, n_freq]
             y: Ground truth parameters [n_samples, 3]
             T: Optional transmission coefficients [n_samples, n_freq]
+            dtype: Tensor dtype (torch.float32 or torch.float64)
         """
-        self.X = torch.from_numpy(X).float() if isinstance(X, np.ndarray) else X
-        self.y = torch.from_numpy(y).float() if isinstance(y, np.ndarray) else y
-        
+        self.dtype = dtype
+        complex_dtype = torch.complex64 if dtype == torch.float32 else torch.complex128
+
+        self.X = torch.from_numpy(X).to(dtype) if isinstance(X, np.ndarray) else X.to(dtype)
+        self.y = torch.from_numpy(y).to(dtype) if isinstance(y, np.ndarray) else y.to(dtype)
+
         if T is not None:
-            self.T = torch.from_numpy(T).to(torch.complex64) if isinstance(T, np.ndarray) else T
+            self.T = torch.from_numpy(T).to(complex_dtype) if isinstance(T, np.ndarray) else T.to(complex_dtype)
         else:
             self.T = None
         
