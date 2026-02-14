@@ -35,11 +35,5 @@
 
   "dataset": {
     "name": "production_v1"
-  },
-
-  "precision": {
-    "use_amp": false,
-    "dtype": "float32",
-    "grad_scaler": false
   }
 }

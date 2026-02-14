@@ -100,13 +100,6 @@ def load_training_config(config_name, config_dir=None):
         dataset = config_dict['dataset']
         config.DATASET_NAME = dataset.get('name', config.DATASET_NAME)
 
-    # Apply precision/AMP settings
-    if 'precision' in config_dict:
-        prec = config_dict['precision']
-        config.USE_AMP = prec.get('use_amp', config.USE_AMP)
-        config.AMP_DTYPE = prec.get('dtype', config.AMP_DTYPE)
-        config.GRAD_SCALER = prec.get('grad_scaler', config.GRAD_SCALER)
-
     # Store config metadata
     config._config_name = config_dict.get('name', config_name)
     config._config_description = config_dict.get('description', '')
@@ -185,12 +178,6 @@ def print_config_summary(config):
     print(f"  Normalized supervised loss: {config.USE_NORMALIZED_SUPERVISED_LOSS}")
     print(f"  Physics loss scale: {config.PHYSICS_LOSS_SCALE}")
     print(f"  Parameter weights: {config.PARAM_WEIGHTS}")
-
-    print(f"\nPrecision:")
-    print(f"  Mixed precision (AMP): {config.USE_AMP}")
-    if config.USE_AMP:
-        print(f"  AMP dtype: {config.AMP_DTYPE}")
-        print(f"  Grad scaler: {config.GRAD_SCALER}")
 
     print("=" * 70)
 
