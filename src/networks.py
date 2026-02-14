@@ -8,6 +8,27 @@ import torch.nn.functional as F
 from training_config import Config
 
 
+def get_activation(name='relu'):
+    """
+    Get activation module by name.
+
+    Args:
+        name: 'relu', 'gelu', 'silu', or 'tanh'
+
+    Returns:
+        nn.Module activation function
+    """
+    activations = {
+        'relu': nn.ReLU,
+        'gelu': nn.GELU,
+        'silu': nn.SiLU,
+        'tanh': nn.Tanh,
+    }
+    if name not in activations:
+        raise ValueError(f"Unknown activation: {name}. Choose from {list(activations.keys())}")
+    return activations[name]()
+
+
 class THz_Encoder_CNN(nn.Module):
     """
     1D CNN encoder for THz parameter extraction.
@@ -89,19 +110,21 @@ class THz_Encoder_CNN(nn.Module):
 
 class ResidualBlock(nn.Module):
     """Residual block for deeper networks."""
-    def __init__(self, channels, kernel_size=3):
+    def __init__(self, channels, kernel_size=3, activation='relu'):
         super().__init__()
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size//2)
         self.bn1 = nn.BatchNorm1d(channels)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size//2)
         self.bn2 = nn.BatchNorm1d(channels)
-        
+        self.activation1 = get_activation(activation)
+        self.activation2 = get_activation(activation)
+
     def forward(self, x):
         residual = x
-        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.activation1(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += residual
-        return F.relu(out)
+        return self.activation2(out)
 
 
 class THz_Encoder_ResNet(nn.Module):
@@ -324,9 +347,12 @@ class THz_Encoder_CNN_Scalable(nn.Module):
         base_channels: Base channel count for first layer (default 32)
         fc_hidden_dims: List of FC hidden layer dimensions (default [128, 64])
         dropout: Dropout rate (default 0.2)
+        activation: Activation function name ('relu', 'gelu', 'silu', 'tanh')
+        use_strided_conv: Use strided conv instead of MaxPool for learnable downsampling
     """
     def __init__(self, n_freq=None, width_mult=1.0, num_blocks=4,
-                 base_channels=32, fc_hidden_dims=[128, 64], dropout=0.2):
+                 base_channels=32, fc_hidden_dims=[128, 64], dropout=0.2,
+                 activation='relu', use_strided_conv=False):
         super().__init__()
 
         if n_freq is None:
@@ -347,13 +373,23 @@ class THz_Encoder_CNN_Scalable(nn.Module):
             # First layer uses larger kernel, others use smaller
             kernel_size = 7 if i == 0 else 5 if i == 1 else 3
 
-            conv_blocks.extend([
-                nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
-                         padding=kernel_size//2),
-                nn.BatchNorm1d(out_channels),
-                nn.ReLU(),
-                nn.MaxPool1d(kernel_size=2, stride=2)
-            ])
+            if use_strided_conv:
+                # Strided convolution for learnable downsampling
+                conv_blocks.extend([
+                    nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
+                             stride=2, padding=kernel_size//2),
+                    nn.BatchNorm1d(out_channels),
+                    get_activation(activation),
+                ])
+            else:
+                # Original: Conv + MaxPool
+                conv_blocks.extend([
+                    nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
+                             padding=kernel_size//2),
+                    nn.BatchNorm1d(out_channels),
+                    get_activation(activation),
+                    nn.MaxPool1d(kernel_size=2, stride=2)
+                ])
             in_channels = out_channels
 
         # Add global pooling at the end
@@ -368,7 +404,7 @@ class THz_Encoder_CNN_Scalable(nn.Module):
         for hidden_dim in fc_hidden_dims:
             fc_blocks.extend([
                 nn.Linear(in_features, hidden_dim),
-                nn.ReLU(),
+                get_activation(activation),
                 nn.Dropout(dropout)
             ])
             in_features = hidden_dim
@@ -411,9 +447,11 @@ class THz_Encoder_ResNet_Scalable(nn.Module):
         base_channels: Base channel count (default 64)
         fc_hidden_dims: List of FC hidden layer dimensions (default [64])
         dropout: Dropout rate (default 0.2)
+        activation: Activation function name ('relu', 'gelu', 'silu', 'tanh')
     """
     def __init__(self, n_freq=None, width_mult=1.0, num_res_blocks=[2, 2, 2],
-                 base_channels=64, fc_hidden_dims=[64], dropout=0.2):
+                 base_channels=64, fc_hidden_dims=[64], dropout=0.2,
+                 activation='relu'):
         super().__init__()
 
         if n_freq is None:
@@ -429,7 +467,7 @@ class THz_Encoder_ResNet_Scalable(nn.Module):
         self.conv_init = nn.Sequential(
             nn.Conv1d(2, channels[0], kernel_size=7, padding=3),
             nn.BatchNorm1d(channels[0]),
-            nn.ReLU(),
+            get_activation(activation),
             nn.MaxPool1d(2, 2)
         )
 
@@ -445,7 +483,7 @@ class THz_Encoder_ResNet_Scalable(nn.Module):
 
             # Add residual blocks for this stage
             for _ in range(num_blocks):
-                stage_blocks.append(ResidualBlock(out_channels, kernel_size=5 if stage_idx == 0 else 3))
+                stage_blocks.append(ResidualBlock(out_channels, kernel_size=5 if stage_idx == 0 else 3, activation=activation))
 
             # Add pooling after residual blocks (except last stage)
             if stage_idx < len(num_res_blocks) - 1:
@@ -463,7 +501,7 @@ class THz_Encoder_ResNet_Scalable(nn.Module):
         for hidden_dim in fc_hidden_dims:
             fc_blocks.extend([
                 nn.Linear(in_features, hidden_dim),
-                nn.ReLU(),
+                get_activation(activation),
                 nn.Dropout(dropout)
             ])
             in_features = hidden_dim
@@ -520,18 +558,24 @@ def get_network(name, config=None, **kwargs):
 
     # For scalable networks, pull parameters from config if not provided in kwargs
     if config is not None:
+        # Common parameters
+        activation = getattr(config, 'ACTIVATION', 'relu')
+
         if name == 'cnn_scalable':
             kwargs.setdefault('width_mult', config.CNN_WIDTH_MULT)
             kwargs.setdefault('num_blocks', config.CNN_NUM_BLOCKS)
             kwargs.setdefault('base_channels', config.CNN_BASE_CHANNELS)
             kwargs.setdefault('fc_hidden_dims', config.FC_HIDDEN_DIMS)
             kwargs.setdefault('dropout', config.CNN_DROPOUT)
+            kwargs.setdefault('activation', activation)
+            kwargs.setdefault('use_strided_conv', getattr(config, 'USE_STRIDED_CONV', False))
         elif name == 'resnet_scalable':
             kwargs.setdefault('width_mult', config.RESNET_WIDTH_MULT)
             kwargs.setdefault('num_res_blocks', config.RESNET_NUM_RES_BLOCKS)
             kwargs.setdefault('base_channels', config.RESNET_BASE_CHANNELS)
             kwargs.setdefault('fc_hidden_dims', config.FC_HIDDEN_DIMS)
             kwargs.setdefault('dropout', config.RESNET_DROPOUT)
+            kwargs.setdefault('activation', activation)
 
     return NETWORKS[name](**kwargs)
 

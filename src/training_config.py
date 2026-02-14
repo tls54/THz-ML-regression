@@ -38,7 +38,12 @@ class Config:
     
     # Loss function
     LOSS_TYPE = 'hybrid'  # 'supervised', 'physics', 'hybrid'
+    SUPERVISED_LOSS = 'mse'  # 'mse' or 'huber' (huber is less sensitive to outliers)
+    HUBER_DELTA = 1.0  # Delta parameter for Huber loss (transition point from L2 to L1)
     ALPHA = 0.5  # Weight for hybrid loss (1.0=supervised only, 0.0=physics only)
+
+    # Gradient clipping
+    GRAD_CLIP_NORM = 1.0  # Max gradient norm (set to None or 0 to disable)
 
     # Loss scaling configuration
     USE_NORMALIZED_SUPERVISED_LOSS = True  # Normalize each parameter to [0,1] for equal contribution
@@ -65,15 +70,13 @@ class Config:
     # FC layer configuration
     FC_HIDDEN_DIMS = [128, 64]  # Hidden layer dimensions for FC layers
 
+    # Activation function
+    ACTIVATION = 'relu'  # Options: 'relu', 'gelu', 'silu', 'tanh'
+
     # Hardware
     DEVICE = 'cuda'  # or 'cpu'
     NUM_WORKERS = 4
 
-    # Mixed Precision Training
-    USE_AMP = False  # Enable automatic mixed precision
-    AMP_DTYPE = 'float16'  # 'float16' (T4/V100), 'bfloat16' (A100/H100/RTX 30+), or 'float32' (disabled)
-    GRAD_SCALER = True  # Use GradScaler (required for float16, optional for bfloat16)
-    
     # Logging
     LOG_INTERVAL = 100  # Log every N batches
     SAVE_INTERVAL = 10  # Save checkpoint every N epochs
