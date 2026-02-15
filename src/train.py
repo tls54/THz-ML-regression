@@ -374,8 +374,16 @@ def plot_training_history(history, save_path=None):
     """
     epochs = np.arange(1, len(history['train_loss']) + 1)
 
-    # Create figure with subplots
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    # Check if we have decomposed loss data
+    has_decomposed_loss = ('train_supervised_loss' in history and
+                           'train_physics_loss' in history and
+                           len(history.get('train_supervised_loss', [])) > 0)
+
+    # Create figure with subplots (3x3 if decomposed loss available, else 2x3)
+    if has_decomposed_loss:
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+    else:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle('Training History', fontsize=16, fontweight='bold')
 
     # Extract metrics per epoch
@@ -570,6 +578,60 @@ def plot_training_history(history, save_path=None):
         ax.text(0.1, 0.95, summary_text, transform=ax.transAxes,
                 fontsize=10, verticalalignment='top', family='monospace',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
+
+    # Row 3: Decomposed Loss Components (only if available)
+    if has_decomposed_loss:
+        train_sup = history['train_supervised_loss']
+        train_phys = history['train_physics_loss']
+        val_sup = history['val_supervised_loss']
+        val_phys = history['val_physics_loss']
+
+        # Row 3, Col 1: Supervised Loss (train vs val)
+        ax = axes[2, 0]
+        ax.plot(epochs, train_sup, 'b-', linewidth=2, label='Train Supervised', alpha=0.8)
+        ax.plot(epochs, val_sup, 'r-', linewidth=2, label='Val Supervised', alpha=0.8)
+        ax.set_xlabel('Epoch', fontsize=11)
+        ax.set_ylabel('Supervised Loss', fontsize=11)
+        ax.set_title('Supervised Loss (Label Prediction)', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Row 3, Col 2: Physics Loss (train vs val)
+        ax = axes[2, 1]
+        ax.plot(epochs, train_phys, 'b-', linewidth=2, label='Train Physics', alpha=0.8)
+        ax.plot(epochs, val_phys, 'r-', linewidth=2, label='Val Physics', alpha=0.8)
+        ax.set_xlabel('Epoch', fontsize=11)
+        ax.set_ylabel('Physics Loss', fontsize=11)
+        ax.set_title('Physics Loss (Transmission Reconstruction)', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Mark epochs with high physics loss spikes (>2x median)
+        phys_median = np.median(train_phys)
+        for i, p in enumerate(train_phys):
+            if p > 2 * phys_median:
+                ax.axvline(x=i+1, color='orange', linestyle='--', alpha=0.3, linewidth=1)
+
+        # Row 3, Col 3: Loss Component Ratio
+        ax = axes[2, 2]
+        # Compute ratio of physics to supervised loss (validation)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ratio = np.array(val_phys) / np.array(val_sup)
+            ratio = np.where(np.isfinite(ratio), ratio, 0)
+
+        ax.plot(epochs, ratio, 'purple', linewidth=2, alpha=0.8)
+        ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, linewidth=1, label='Equal contribution')
+        ax.set_xlabel('Epoch', fontsize=11)
+        ax.set_ylabel('Physics / Supervised Ratio', fontsize=11)
+        ax.set_title('Loss Component Ratio (Val)', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Add annotation about relative magnitudes
+        avg_ratio = np.mean(ratio[ratio > 0]) if np.any(ratio > 0) else 0
+        ax.annotate(f'Avg ratio: {avg_ratio:.2f}', xy=(epochs[-1], ratio[-1]),
+                   xytext=(-60, 10), textcoords='offset points',
+                   fontsize=9, color='purple')
 
     plt.tight_layout()
 
