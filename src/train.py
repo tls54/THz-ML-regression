@@ -242,9 +242,12 @@ def get_loss_function(config):
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device, config):
-    """Train for one epoch."""
+    """Train for one epoch. Returns dict with loss components."""
     model.train()
     total_loss = 0
+    total_supervised = 0
+    total_physics = 0
+    num_batches = 0
 
     pbar = tqdm(dataloader, desc="Training")
     for batch_idx, batch_data in enumerate(pbar):
@@ -262,10 +265,19 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config):
 
         if config.LOSS_TYPE == 'supervised':
             loss = criterion(y_pred, y)
+            loss_supervised = loss.item()
+            loss_physics = 0.0
         elif config.LOSS_TYPE == 'physics':
             loss = criterion(y_pred, T)
-        else:  # hybrid
-            loss = criterion(y_pred, y, T)
+            loss_supervised = 0.0
+            loss_physics = loss.item()
+        else:  # hybrid - decompose the loss
+            loss_sup = criterion.supervised_loss(y_pred, y)
+            loss_phys = criterion.physics_loss(y_pred, T)
+            loss_phys_scaled = criterion.physics_scale * loss_phys
+            loss = criterion.alpha * loss_sup + (1 - criterion.alpha) * loss_phys_scaled
+            loss_supervised = loss_sup.item()
+            loss_physics = loss_phys.item()
 
         loss.backward()
 
@@ -276,17 +288,27 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config):
         optimizer.step()
 
         total_loss += loss.item()
+        total_supervised += loss_supervised
+        total_physics += loss_physics
+        num_batches += 1
 
         # Update progress bar
         pbar.set_postfix({'loss': f'{loss.item():.6f}'})
 
-    return total_loss / len(dataloader)
+    return {
+        'total': total_loss / num_batches,
+        'supervised': total_supervised / num_batches,
+        'physics': total_physics / num_batches
+    }
 
 
 def validate(model, dataloader, criterion, device, config):
-    """Validate model."""
+    """Validate model. Returns (loss_dict, metrics)."""
     model.eval()
     total_loss = 0
+    total_supervised = 0
+    total_physics = 0
+    num_batches = 0
     all_preds = []
     all_targets = []
 
@@ -304,12 +326,24 @@ def validate(model, dataloader, criterion, device, config):
 
             if config.LOSS_TYPE == 'supervised':
                 loss = criterion(y_pred, y)
+                loss_supervised = loss.item()
+                loss_physics = 0.0
             elif config.LOSS_TYPE == 'physics':
                 loss = criterion(y_pred, T)
-            else:  # hybrid
-                loss = criterion(y_pred, y, T)
+                loss_supervised = 0.0
+                loss_physics = loss.item()
+            else:  # hybrid - decompose the loss
+                loss_sup = criterion.supervised_loss(y_pred, y)
+                loss_phys = criterion.physics_loss(y_pred, T)
+                loss_phys_scaled = criterion.physics_scale * loss_phys
+                loss = criterion.alpha * loss_sup + (1 - criterion.alpha) * loss_phys_scaled
+                loss_supervised = loss_sup.item()
+                loss_physics = loss_phys.item()
 
             total_loss += loss.item()
+            total_supervised += loss_supervised
+            total_physics += loss_physics
+            num_batches += 1
             all_preds.append(y_pred.cpu())
             all_targets.append(y.cpu())
 
@@ -318,7 +352,13 @@ def validate(model, dataloader, criterion, device, config):
     all_targets = torch.cat(all_targets, dim=0)
     metrics = compute_metrics(all_targets, all_preds)
 
-    return total_loss / len(dataloader), metrics
+    loss_dict = {
+        'total': total_loss / num_batches,
+        'supervised': total_supervised / num_batches,
+        'physics': total_physics / num_batches
+    }
+
+    return loss_dict, metrics
 
 
 def plot_training_history(history, save_path=None):
@@ -649,7 +689,11 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     # Training history
     history = {
         'train_loss': [],
+        'train_supervised_loss': [],
+        'train_physics_loss': [],
         'val_loss': [],
+        'val_supervised_loss': [],
+        'val_physics_loss': [],
         'val_metrics': [],
         'learning_rate': []
     }
@@ -680,43 +724,48 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}")
         print(f"{'-'*60}")
         
-        # Train
-        train_loss = train_epoch(model, train_loader, criterion, optimizer, device, config)
+        # Train (returns dict with loss components)
+        train_losses = train_epoch(model, train_loader, criterion, optimizer, device, config)
 
-        # Validate
-        val_loss, val_metrics = validate(model, val_loader, criterion, device, config)
-        
+        # Validate (returns dict with loss components)
+        val_losses, val_metrics = validate(model, val_loader, criterion, device, config)
+
         # Update scheduler
-        scheduler.step(val_loss)
+        scheduler.step(val_losses['total'])
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
 
         # Save history
-        history['train_loss'].append(train_loss)
-        history['val_loss'].append(val_loss)
+        history['train_loss'].append(train_losses['total'])
+        history['train_supervised_loss'].append(train_losses.get('supervised', 0.0))
+        history['train_physics_loss'].append(train_losses.get('physics', 0.0))
+        history['val_loss'].append(val_losses['total'])
+        history['val_supervised_loss'].append(val_losses.get('supervised', 0.0))
+        history['val_physics_loss'].append(val_losses.get('physics', 0.0))
         history['val_metrics'].append(val_metrics)
         history['learning_rate'].append(current_lr)
-        
+
         # Print epoch summary
         epoch_time = time.time() - epoch_start
         print(f"\nEpoch {epoch+1} Summary:")
-        print(f"  Train Loss: {train_loss:.6f}")
-        print(f"  Val Loss:   {val_loss:.6f}")
+        print(f"  Train Loss: {train_losses['total']:.6f} (supervised: {train_losses.get('supervised', 0.0):.6f}, physics: {train_losses.get('physics', 0.0):.6f})")
+        print(f"  Val Loss:   {val_losses['total']:.6f} (supervised: {val_losses.get('supervised', 0.0):.6f}, physics: {val_losses.get('physics', 0.0):.6f})")
         print(f"  LR:         {current_lr:.2e}")
         print(f"  Time: {epoch_time:.1f}s")
         print_metrics(val_metrics, title="Validation Metrics")
         
         # Save best model
+        val_loss = val_losses['total']
         if val_loss < best_val_loss - config.MIN_DELTA:
             best_val_loss = val_loss
             patience_counter = 0
-            
+
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': train_loss,
+                'train_loss': train_losses['total'],
                 'val_loss': val_loss,
                 'val_metrics': val_metrics,
                 'best_val_loss': best_val_loss,
@@ -724,20 +773,20 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                 'network_name': network_name,
                 'run_name': run_name
             }
-            
+
             save_path = model_dir / 'best_model.pt'
             torch.save(checkpoint, save_path)
             print(f"✓ Saved best model to {save_path}")
         else:
             patience_counter += 1
-        
+
         # Save periodic checkpoint
         if (epoch + 1) % config.SAVE_INTERVAL == 0:
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': train_loss,
+                'train_loss': train_losses['total'],
                 'val_loss': val_loss,
                 'val_metrics': val_metrics,
                 'best_val_loss': best_val_loss,
@@ -745,7 +794,7 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                 'network_name': network_name,
                 'run_name': run_name
             }
-            
+
             save_path = model_dir / f'checkpoint_epoch_{epoch+1}.pt'
             torch.save(checkpoint, save_path)
             print(f"✓ Saved checkpoint to {save_path}")
@@ -763,8 +812,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'train_loss': train_loss,
-        'val_loss': val_loss,
+        'train_loss': train_losses['total'],
+        'val_loss': val_losses['total'],
         'best_val_loss': best_val_loss,
         'config': run_config,
         'network_name': network_name,
@@ -782,7 +831,11 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         # Convert metrics to serializable format
         history_json = {
             'train_loss': history['train_loss'],
+            'train_supervised_loss': history['train_supervised_loss'],
+            'train_physics_loss': history['train_physics_loss'],
             'val_loss': history['val_loss'],
+            'val_supervised_loss': history['val_supervised_loss'],
+            'val_physics_loss': history['val_physics_loss'],
             'val_metrics': [
                 {k: float(v) for k, v in m.items()}
                 for m in history['val_metrics']
