@@ -30,6 +30,7 @@ datalake/
 
 # Jupyter
 .ipynb_checkpoints/
+train_notebook-colab.ipynb
 
 # Generated plots (regenerable)
 

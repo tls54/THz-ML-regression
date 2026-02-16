@@ -29,6 +29,32 @@ def get_activation(name='relu'):
     return activations[name]()
 
 
+def get_norm_layer(num_channels, norm_type='group', num_groups=None):
+    """
+    Get normalization layer.
+
+    Args:
+        num_channels: Number of channels to normalize
+        norm_type: 'group' for GroupNorm, 'batch' for BatchNorm1d
+        num_groups: Number of groups for GroupNorm (default: channels // 8, min 1)
+
+    Returns:
+        nn.Module normalization layer
+    """
+    if norm_type == 'batch':
+        return nn.BatchNorm1d(num_channels)
+    elif norm_type == 'group':
+        if num_groups is None:
+            # Default: 8 channels per group, minimum 1 group
+            num_groups = max(1, num_channels // 8)
+        # Ensure num_groups divides num_channels
+        while num_channels % num_groups != 0:
+            num_groups -= 1
+        return nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
+    else:
+        raise ValueError(f"Unknown norm_type: {norm_type}. Choose 'group' or 'batch'")
+
+
 class THz_Encoder_CNN(nn.Module):
     """
     1D CNN encoder for THz parameter extraction.
@@ -47,28 +73,28 @@ class THz_Encoder_CNN(nn.Module):
         self.conv_layers = nn.Sequential(
             # Layer 1: Extract local features
             nn.Conv1d(in_channels=2, out_channels=32, kernel_size=7, padding=3),
-            nn.BatchNorm1d(32),
+            get_norm_layer(32),
             nn.ReLU(),
             nn.MaxPool1d(kernel_size=2, stride=2),
-            
+
             # Layer 2: Build intermediate representations
             nn.Conv1d(32, 64, kernel_size=5, padding=2),
-            nn.BatchNorm1d(64),
+            get_norm_layer(64),
             nn.ReLU(),
             nn.MaxPool1d(2, 2),
-            
+
             # Layer 3: Higher-level features
             nn.Conv1d(64, 128, kernel_size=5, padding=2),
-            nn.BatchNorm1d(128),
+            get_norm_layer(128),
             nn.ReLU(),
             nn.MaxPool1d(2, 2),
-            
+
             # Layer 4: Deep features
             nn.Conv1d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256),
+            get_norm_layer(256),
             nn.ReLU(),
             nn.MaxPool1d(2, 2),
-            
+
             # Global pooling
             nn.AdaptiveAvgPool1d(1)
         )
@@ -113,16 +139,16 @@ class ResidualBlock(nn.Module):
     def __init__(self, channels, kernel_size=3, activation='relu'):
         super().__init__()
         self.conv1 = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size//2)
-        self.bn1 = nn.BatchNorm1d(channels)
+        self.norm1 = get_norm_layer(channels)
         self.conv2 = nn.Conv1d(channels, channels, kernel_size, padding=kernel_size//2)
-        self.bn2 = nn.BatchNorm1d(channels)
+        self.norm2 = get_norm_layer(channels)
         self.activation1 = get_activation(activation)
         self.activation2 = get_activation(activation)
 
     def forward(self, x):
         residual = x
-        out = self.activation1(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        out = self.activation1(self.norm1(self.conv1(x)))
+        out = self.norm2(self.conv2(out))
         out += residual
         return self.activation2(out)
 
@@ -143,7 +169,7 @@ class THz_Encoder_ResNet(nn.Module):
         # Initial convolution
         self.conv_init = nn.Sequential(
             nn.Conv1d(2, 64, kernel_size=7, padding=3),
-            nn.BatchNorm1d(64),
+            get_norm_layer(64),
             nn.ReLU(),
             nn.MaxPool1d(2, 2)
         )
@@ -215,43 +241,43 @@ class THz_Encoder_MultiScale(nn.Module):
         # Branch 1: Fine features (small kernels)
         self.branch_fine = nn.Sequential(
             nn.Conv1d(2, 32, kernel_size=3, padding=1),
-            nn.BatchNorm1d(32),
+            get_norm_layer(32),
             nn.ReLU(),
             nn.MaxPool1d(4, 4),
             nn.Conv1d(32, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64),
+            get_norm_layer(64),
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(32)
         )
-        
+
         # Branch 2: Medium features
         self.branch_medium = nn.Sequential(
             nn.Conv1d(2, 32, kernel_size=7, padding=3),
-            nn.BatchNorm1d(32),
+            get_norm_layer(32),
             nn.ReLU(),
             nn.MaxPool1d(4, 4),
             nn.Conv1d(32, 64, kernel_size=5, padding=2),
-            nn.BatchNorm1d(64),
+            get_norm_layer(64),
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(32)
         )
-        
+
         # Branch 3: Coarse features (large kernels)
         self.branch_coarse = nn.Sequential(
             nn.Conv1d(2, 32, kernel_size=15, padding=7),
-            nn.BatchNorm1d(32),
+            get_norm_layer(32),
             nn.ReLU(),
             nn.MaxPool1d(4, 4),
             nn.Conv1d(32, 64, kernel_size=9, padding=4),
-            nn.BatchNorm1d(64),
+            get_norm_layer(64),
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(32)
         )
-        
+
         # Combine branches
         self.combine = nn.Sequential(
             nn.Conv1d(192, 128, kernel_size=1),  # 64*3 = 192 channels
-            nn.BatchNorm1d(128),
+            get_norm_layer(128),
             nn.ReLU(),
             nn.AdaptiveAvgPool1d(1)
         )
@@ -378,7 +404,7 @@ class THz_Encoder_CNN_Scalable(nn.Module):
                 conv_blocks.extend([
                     nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
                              stride=2, padding=kernel_size//2),
-                    nn.BatchNorm1d(out_channels),
+                    get_norm_layer(out_channels),
                     get_activation(activation),
                 ])
             else:
@@ -386,7 +412,7 @@ class THz_Encoder_CNN_Scalable(nn.Module):
                 conv_blocks.extend([
                     nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
                              padding=kernel_size//2),
-                    nn.BatchNorm1d(out_channels),
+                    get_norm_layer(out_channels),
                     get_activation(activation),
                     nn.MaxPool1d(kernel_size=2, stride=2)
                 ])
@@ -466,7 +492,7 @@ class THz_Encoder_ResNet_Scalable(nn.Module):
         # Initial convolution
         self.conv_init = nn.Sequential(
             nn.Conv1d(2, channels[0], kernel_size=7, padding=3),
-            nn.BatchNorm1d(channels[0]),
+            get_norm_layer(channels[0]),
             get_activation(activation),
             nn.MaxPool1d(2, 2)
         )
