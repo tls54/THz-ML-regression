@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 
-from simulate import simulate_transmission_ml, prepare_ml_input
+from .simulate import simulate_transmission_ml, prepare_ml_input
 
 
 # ============================================================================

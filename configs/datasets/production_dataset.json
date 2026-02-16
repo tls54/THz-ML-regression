@@ -1,5 +1,5 @@
 {
-  "dataset_name": "production_v1",
+  "dataset_name": "production_v2",
   "description": "Production example of THz transmission dataset with wide parameter coverage",
 
   "simulation": {
@@ -21,7 +21,7 @@
     },
     "d": {
       "min": 100e-6,
-      "max": 1000e-6,
+      "max": 600e-6,
       "distribution": "uniform"
     }
   },
