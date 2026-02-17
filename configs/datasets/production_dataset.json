@@ -16,7 +16,7 @@
     },
     "kappa": {
       "min": -0.1,
-      "max": 0.01,
+      "max": 0.0,
       "distribution": "uniform"
     },
     "d": {

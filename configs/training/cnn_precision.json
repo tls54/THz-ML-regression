@@ -34,7 +34,9 @@
       "n": 1.0,
       "kappa": 1.0,
       "d": 1.0
-    }
+    },
+    "physics_freq_min": 0.3e12,
+    "physics_freq_max": 2.5e12
   },
 
   "hardware": {

@@ -26,7 +26,7 @@ class Config:
     N_MIN = 1.1
     N_MAX = 7.0
     KAPPA_MIN = -0.1
-    KAPPA_MAX = 0.01
+    KAPPA_MAX = 0.0  # Absorption only (no gain)
     D_MIN = 100e-6  # meters
     D_MAX = 1000e-6  # meters
     
@@ -53,6 +53,11 @@ class Config:
         'kappa': 1.0,
         'd': 1.0
     }
+
+    # Physics loss frequency band (Hz)
+    # Focus on 0.3-2.5 THz where THz-TDS has best SNR
+    PHYSICS_FREQ_MIN = 0.3e12  # 0.3 THz - skip DC and low-freq noise
+    PHYSICS_FREQ_MAX = 2.5e12  # 2.5 THz - avoid high-freq noise/rapid oscillations
 
     # Network Architecture
     # CNN/ResNet scaling parameters

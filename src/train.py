@@ -35,20 +35,40 @@ from simulate import simulate_transmission_ml
 
 
 class PhysicsInformedLoss(nn.Module):
-    """Physics-informed loss using forward model."""
-    
+    """Physics-informed loss using forward model with optional frequency banding."""
+
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
+
+        # Frequency band for physics loss (in Hz)
+        # Default: 0.3-2.5 THz - the "sweet spot" for THz-TDS
+        self.freq_min = getattr(config, 'PHYSICS_FREQ_MIN', 0.3e12)
+        self.freq_max = getattr(config, 'PHYSICS_FREQ_MAX', 2.5e12)
+
+        # Precompute frequency indices for the band
+        # frequencies = [0, deltaf, 2*deltaf, ..., M*deltaf]
+        M = 2 * config.L
+        N = 4 * config.L
+        deltaf = 1.0 / (N * config.DELTAT)
+
+        # Find indices corresponding to freq_min and freq_max
+        self.idx_min = max(1, int(self.freq_min / deltaf))  # Skip DC (index 0)
+        self.idx_max = min(M, int(self.freq_max / deltaf))
+
+        # Store for logging
+        self.actual_freq_min = self.idx_min * deltaf
+        self.actual_freq_max = self.idx_max * deltaf
+        self.n_freq_points = self.idx_max - self.idx_min
+
     def forward(self, predicted_params, true_T):
         """
-        Compute reconstruction loss via forward model.
-        
+        Compute reconstruction loss via forward model on selected frequency band.
+
         Args:
             predicted_params: [B, 3] - predicted [n, κ, d]
             true_T: [B, M+1] - true transmission (complex)
-            
+
         Returns:
             loss: scalar
         """
@@ -56,7 +76,7 @@ class PhysicsInformedLoss(nn.Module):
         n_pred = predicted_params[:, 0]
         kappa_pred = predicted_params[:, 1]
         d_pred = predicted_params[:, 2]
-        
+
         # Forward model (differentiable!)
         _, T_pred, _ = simulate_transmission_ml(
             n_pred, kappa_pred, d_pred,
@@ -64,11 +84,15 @@ class PhysicsInformedLoss(nn.Module):
             device=predicted_params.device,
             return_time_domain=False
         )
-        
-        # MSE on real and imaginary parts
-        loss_real = torch.mean((T_pred.real - true_T.real) ** 2)
-        loss_imag = torch.mean((T_pred.imag - true_T.imag) ** 2)
-        
+
+        # Select frequency band [idx_min:idx_max]
+        T_pred_band = T_pred[:, self.idx_min:self.idx_max]
+        true_T_band = true_T[:, self.idx_min:self.idx_max]
+
+        # MSE on real and imaginary parts within band
+        loss_real = torch.mean((T_pred_band.real - true_T_band.real) ** 2)
+        loss_imag = torch.mean((T_pred_band.imag - true_T_band.imag) ** 2)
+
         return loss_real + loss_imag
 
 
@@ -234,9 +258,14 @@ def get_loss_function(config):
             else:
                 return nn.MSELoss()
     elif config.LOSS_TYPE == 'physics':
-        return PhysicsInformedLoss(config)
+        loss_fn = PhysicsInformedLoss(config)
+        print(f"Physics loss frequency band: {loss_fn.actual_freq_min/1e12:.2f}-{loss_fn.actual_freq_max/1e12:.2f} THz ({loss_fn.n_freq_points} points)")
+        return loss_fn
     elif config.LOSS_TYPE == 'hybrid':
-        return HybridLoss(config)
+        loss_fn = HybridLoss(config)
+        phys = loss_fn.physics_loss
+        print(f"Physics loss frequency band: {phys.actual_freq_min/1e12:.2f}-{phys.actual_freq_max/1e12:.2f} THz ({phys.n_freq_points} points)")
+        return loss_fn
     else:
         raise ValueError(f"Unknown loss type: {config.LOSS_TYPE}")
 
@@ -303,15 +332,17 @@ def train_epoch(model, dataloader, criterion, optimizer, device, config):
 
 
 def validate(model, dataloader, criterion, device, config):
-    """Validate model. Returns (loss_dict, metrics)."""
+    """Validate model. Returns (loss_dict, metrics).
+
+    Computes loss on the full validation set at once (not per-batch averaging)
+    to reduce variance from batch composition, especially for physics loss.
+    """
     model.eval()
-    total_loss = 0
-    total_supervised = 0
-    total_physics = 0
-    num_batches = 0
     all_preds = []
     all_targets = []
+    all_T = []
 
+    # Collect all predictions first
     with torch.no_grad():
         for batch_data in dataloader:
             if len(batch_data) == 3:
@@ -324,38 +355,44 @@ def validate(model, dataloader, criterion, device, config):
 
             y_pred = model(X)
 
-            if config.LOSS_TYPE == 'supervised':
-                loss = criterion(y_pred, y)
-                loss_supervised = loss.item()
-                loss_physics = 0.0
-            elif config.LOSS_TYPE == 'physics':
-                loss = criterion(y_pred, T)
-                loss_supervised = 0.0
-                loss_physics = loss.item()
-            else:  # hybrid - decompose the loss
-                loss_sup = criterion.supervised_loss(y_pred, y)
-                loss_phys = criterion.physics_loss(y_pred, T)
-                loss_phys_scaled = criterion.physics_scale * loss_phys
-                loss = criterion.alpha * loss_sup + (1 - criterion.alpha) * loss_phys_scaled
-                loss_supervised = loss_sup.item()
-                loss_physics = loss_phys.item()
+            all_preds.append(y_pred)
+            all_targets.append(y)
+            if T is not None:
+                all_T.append(T)
 
-            total_loss += loss.item()
-            total_supervised += loss_supervised
-            total_physics += loss_physics
-            num_batches += 1
-            all_preds.append(y_pred.cpu())
-            all_targets.append(y.cpu())
-
-    # Compute metrics
+    # Concatenate all data
     all_preds = torch.cat(all_preds, dim=0)
     all_targets = torch.cat(all_targets, dim=0)
-    metrics = compute_metrics(all_targets, all_preds)
+    if all_T:
+        all_T = torch.cat(all_T, dim=0)
+    else:
+        all_T = None
+
+    # Compute loss on full validation set at once
+    with torch.no_grad():
+        if config.LOSS_TYPE == 'supervised':
+            loss = criterion(all_preds, all_targets)
+            loss_supervised = loss.item()
+            loss_physics = 0.0
+        elif config.LOSS_TYPE == 'physics':
+            loss = criterion(all_preds, all_T)
+            loss_supervised = 0.0
+            loss_physics = loss.item()
+        else:  # hybrid - decompose the loss
+            loss_sup = criterion.supervised_loss(all_preds, all_targets)
+            loss_phys = criterion.physics_loss(all_preds, all_T)
+            loss_phys_scaled = criterion.physics_scale * loss_phys
+            loss = criterion.alpha * loss_sup + (1 - criterion.alpha) * loss_phys_scaled
+            loss_supervised = loss_sup.item()
+            loss_physics = loss_phys.item()
+
+    # Compute metrics (on CPU to save GPU memory)
+    metrics = compute_metrics(all_targets.cpu(), all_preds.cpu())
 
     loss_dict = {
-        'total': total_loss / num_batches,
-        'supervised': total_supervised / num_batches,
-        'physics': total_physics / num_batches
+        'total': loss.item(),
+        'supervised': loss_supervised,
+        'physics': loss_physics
     }
 
     return loss_dict, metrics
