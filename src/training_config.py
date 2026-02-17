@@ -42,6 +42,13 @@ class Config:
     HUBER_DELTA = 1.0  # Delta parameter for Huber loss (transition point from L2 to L1)
     ALPHA = 0.5  # Weight for hybrid loss (1.0=supervised only, 0.0=physics only)
 
+    # Alpha scheduling (dynamic loss balance)
+    # After warmup_epochs, alpha transitions from ALPHA to ALPHA_FINAL over decay_epochs
+    ALPHA_SCHEDULE_ENABLED = False  # Set True to enable dynamic alpha
+    ALPHA_WARMUP_EPOCHS = 30  # Epochs to keep initial ALPHA before starting decay
+    ALPHA_FINAL = 0.3  # Final alpha value (more physics-heavy)
+    ALPHA_DECAY_EPOCHS = 30  # Epochs over which to decay from ALPHA to ALPHA_FINAL
+
     # Gradient clipping
     GRAD_CLIP_NORM = 1.0  # Max gradient norm (set to None or 0 to disable)
 
@@ -58,6 +65,11 @@ class Config:
     # Focus on 0.3-2.5 THz where THz-TDS has best SNR
     PHYSICS_FREQ_MIN = 0.3e12  # 0.3 THz - skip DC and low-freq noise
     PHYSICS_FREQ_MAX = 2.5e12  # 2.5 THz - avoid high-freq noise/rapid oscillations
+
+    # Physics loss mode: how to compare predicted vs true transmission
+    # 'real_imag': MSE on real and imaginary parts (default, can have coupled gradients)
+    # 'mag_phase': MSE on magnitude + phase via sin/cos (decouples n/κ gradients, more stable)
+    PHYSICS_LOSS_MODE = 'real_imag'
 
     # Network Architecture
     # CNN/ResNet scaling parameters
@@ -92,8 +104,12 @@ class Config:
     MIN_DELTA = 1e-6  # Minimum improvement to count
 
     # Learning rate scheduler
-    SCHEDULER_PATIENCE = 10  # Epochs to wait before reducing LR
-    SCHEDULER_FACTOR = 0.5  # Factor to reduce LR by
+    # Options: 'plateau' (ReduceLROnPlateau) or 'cosine' (CosineAnnealingLR)
+    LR_SCHEDULER = 'plateau'
+    SCHEDULER_PATIENCE = 10  # For plateau: epochs to wait before reducing LR
+    SCHEDULER_FACTOR = 0.5  # For plateau: factor to reduce LR by
+    COSINE_T_MAX = None  # For cosine: period in epochs (defaults to NUM_EPOCHS if None)
+    COSINE_ETA_MIN = 1e-6  # For cosine: minimum learning rate
     
     @classmethod
     def get_freq_info(cls):

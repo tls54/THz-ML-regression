@@ -1,6 +1,6 @@
 {
   "name": "cnn_precision",
-  "description": "CNN optimized for precision - uses Huber loss, GELU activation, larger FC head",
+  "description": "CNN optimized for precision - mag/phase physics loss, cosine LR, alpha scheduling",
 
   "network": {
     "type": "cnn_scalable",
@@ -13,13 +13,13 @@
   },
 
   "training": {
-    "num_epochs": 150,
-    "batch_size": 256,
+    "num_epochs": 100,
+    "batch_size": 64,
     "learning_rate": 1e-4,
     "weight_decay": 1e-5,
     "patience": 20,
-    "scheduler_patience": 10,
-    "scheduler_factor": 0.5,
+    "lr_scheduler": "cosine",
+    "cosine_eta_min": 1e-6,
     "grad_clip_norm": 1.0
   },
 
@@ -30,13 +30,20 @@
     "alpha": 0.7,
     "use_normalized_supervised_loss": true,
     "physics_loss_scale": 0.3,
+    "physics_loss_mode": "mag_phase",
     "param_weights": {
       "n": 1.0,
       "kappa": 1.0,
       "d": 1.0
     },
     "physics_freq_min": 0.3e12,
-    "physics_freq_max": 2.5e12
+    "physics_freq_max": 2.5e12,
+    "alpha_schedule": {
+      "enabled": true,
+      "warmup_epochs": 30,
+      "final_alpha": 0.3,
+      "decay_epochs": 30
+    }
   },
 
   "hardware": {
@@ -44,6 +51,6 @@
   },
 
   "dataset": {
-    "name": "production_v1"
+    "name": "production_v2"
   }
 }

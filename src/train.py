@@ -34,8 +34,112 @@ from utils import (
 from simulate import simulate_transmission_ml
 
 
+class AlphaScheduler:
+    """
+    Scheduler for dynamically adjusting the alpha parameter in hybrid loss.
+
+    Supports warmup period followed by linear decay to shift from supervised
+    to physics-heavy training.
+
+    Schedule:
+        - Epochs [0, warmup_epochs): alpha = initial_alpha (supervised-heavy)
+        - Epochs [warmup_epochs, warmup_epochs + decay_epochs): linear decay
+        - Epochs >= warmup_epochs + decay_epochs: alpha = final_alpha (physics-heavy)
+    """
+
+    def __init__(self, initial_alpha, final_alpha, warmup_epochs, decay_epochs):
+        """
+        Args:
+            initial_alpha: Starting alpha value (higher = more supervised)
+            final_alpha: Final alpha value after decay (lower = more physics)
+            warmup_epochs: Number of epochs to maintain initial_alpha
+            decay_epochs: Number of epochs to decay from initial to final
+        """
+        self.initial_alpha = initial_alpha
+        self.final_alpha = final_alpha
+        self.warmup_epochs = warmup_epochs
+        self.decay_epochs = decay_epochs
+        self.current_epoch = 0
+        self.current_alpha = initial_alpha
+
+    def step(self, epoch=None):
+        """
+        Update alpha based on current epoch.
+
+        Args:
+            epoch: Current epoch number (0-indexed). If None, increments internally.
+
+        Returns:
+            float: Current alpha value
+        """
+        if epoch is not None:
+            self.current_epoch = epoch
+        else:
+            self.current_epoch += 1
+
+        if self.current_epoch < self.warmup_epochs:
+            # Warmup phase: keep initial alpha
+            self.current_alpha = self.initial_alpha
+        elif self.current_epoch < self.warmup_epochs + self.decay_epochs:
+            # Decay phase: linear interpolation
+            progress = (self.current_epoch - self.warmup_epochs) / self.decay_epochs
+            self.current_alpha = self.initial_alpha + progress * (self.final_alpha - self.initial_alpha)
+        else:
+            # Post-decay: maintain final alpha
+            self.current_alpha = self.final_alpha
+
+        return self.current_alpha
+
+    def get_alpha(self):
+        """Get current alpha value."""
+        return self.current_alpha
+
+    @classmethod
+    def from_config(cls, config):
+        """Create scheduler from config object."""
+        if not getattr(config, 'ALPHA_SCHEDULE_ENABLED', False):
+            return None
+        return cls(
+            initial_alpha=config.ALPHA,
+            final_alpha=getattr(config, 'ALPHA_FINAL', 0.3),
+            warmup_epochs=getattr(config, 'ALPHA_WARMUP_EPOCHS', 30),
+            decay_epochs=getattr(config, 'ALPHA_DECAY_EPOCHS', 30)
+        )
+
+    def state_dict(self):
+        """Return scheduler state for checkpointing."""
+        return {
+            'initial_alpha': self.initial_alpha,
+            'final_alpha': self.final_alpha,
+            'warmup_epochs': self.warmup_epochs,
+            'decay_epochs': self.decay_epochs,
+            'current_epoch': self.current_epoch,
+            'current_alpha': self.current_alpha
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load scheduler state from checkpoint."""
+        self.initial_alpha = state_dict['initial_alpha']
+        self.final_alpha = state_dict['final_alpha']
+        self.warmup_epochs = state_dict['warmup_epochs']
+        self.decay_epochs = state_dict['decay_epochs']
+        self.current_epoch = state_dict['current_epoch']
+        self.current_alpha = state_dict['current_alpha']
+
+
 class PhysicsInformedLoss(nn.Module):
-    """Physics-informed loss using forward model with optional frequency banding."""
+    """Physics-informed loss using forward model with optional frequency banding.
+
+    Supports two modes:
+    - 'real_imag': MSE on real and imaginary parts (default)
+    - 'mag_phase': MSE on magnitude + phase via sin/cos (decouples gradients)
+
+    The mag_phase mode separates the physics more cleanly:
+    - |T| is dominated by κ (absorption) → exponential decay
+    - ∠T is dominated by n×d (optical path) → linear phase accumulation
+
+    This reduces gradient coupling and can stabilize training, especially for κ.
+    """
 
     def __init__(self, config):
         super().__init__()
@@ -45,6 +149,9 @@ class PhysicsInformedLoss(nn.Module):
         # Default: 0.3-2.5 THz - the "sweet spot" for THz-TDS
         self.freq_min = getattr(config, 'PHYSICS_FREQ_MIN', 0.3e12)
         self.freq_max = getattr(config, 'PHYSICS_FREQ_MAX', 2.5e12)
+
+        # Loss mode: 'real_imag' or 'mag_phase'
+        self.mode = getattr(config, 'PHYSICS_LOSS_MODE', 'real_imag')
 
         # Precompute frequency indices for the band
         # frequencies = [0, deltaf, 2*deltaf, ..., M*deltaf]
@@ -89,11 +196,29 @@ class PhysicsInformedLoss(nn.Module):
         T_pred_band = T_pred[:, self.idx_min:self.idx_max]
         true_T_band = true_T[:, self.idx_min:self.idx_max]
 
-        # MSE on real and imaginary parts within band
-        loss_real = torch.mean((T_pred_band.real - true_T_band.real) ** 2)
-        loss_imag = torch.mean((T_pred_band.imag - true_T_band.imag) ** 2)
+        if self.mode == 'mag_phase':
+            # Magnitude/Phase mode: decouples n/κ gradients
+            # Magnitude: dominated by absorption (κ)
+            mag_pred = torch.abs(T_pred_band)
+            mag_true = torch.abs(true_T_band)
+            loss_mag = torch.mean((mag_pred - mag_true) ** 2)
 
-        return loss_real + loss_imag
+            # Phase via sin/cos: avoids wrapping issues at ±π
+            # This is equivalent to comparing unit vectors on the complex plane
+            phase_pred = torch.angle(T_pred_band)
+            phase_true = torch.angle(true_T_band)
+
+            # Use sin/cos to avoid phase wrapping discontinuities
+            loss_phase_cos = torch.mean((torch.cos(phase_pred) - torch.cos(phase_true)) ** 2)
+            loss_phase_sin = torch.mean((torch.sin(phase_pred) - torch.sin(phase_true)) ** 2)
+
+            return loss_mag + loss_phase_cos + loss_phase_sin
+        else:
+            # Real/Imag mode (default): standard approach
+            loss_real = torch.mean((T_pred_band.real - true_T_band.real) ** 2)
+            loss_imag = torch.mean((T_pred_band.imag - true_T_band.imag) ** 2)
+
+            return loss_real + loss_imag
 
 
 class NormalizedMSELoss(nn.Module):
@@ -225,7 +350,11 @@ class HybridLoss(nn.Module):
                 self.supervised_loss = nn.MSELoss()
 
         self.physics_scale = config.PHYSICS_LOSS_SCALE
-        
+
+    def set_alpha(self, alpha):
+        """Update alpha value (for dynamic scheduling)."""
+        self.alpha = alpha
+
     def forward(self, predicted_params, true_params, true_T):
         """
         Args:
@@ -260,11 +389,13 @@ def get_loss_function(config):
     elif config.LOSS_TYPE == 'physics':
         loss_fn = PhysicsInformedLoss(config)
         print(f"Physics loss frequency band: {loss_fn.actual_freq_min/1e12:.2f}-{loss_fn.actual_freq_max/1e12:.2f} THz ({loss_fn.n_freq_points} points)")
+        print(f"Physics loss mode: {loss_fn.mode}")
         return loss_fn
     elif config.LOSS_TYPE == 'hybrid':
         loss_fn = HybridLoss(config)
         phys = loss_fn.physics_loss
         print(f"Physics loss frequency band: {phys.actual_freq_min/1e12:.2f}-{phys.actual_freq_max/1e12:.2f} THz ({phys.n_freq_points} points)")
+        print(f"Physics loss mode: {phys.mode}")
         return loss_fn
     else:
         raise ValueError(f"Unknown loss type: {config.LOSS_TYPE}")
@@ -557,16 +688,16 @@ def plot_training_history(history, save_path=None):
         ax.axhline(y=0.9, color='gray', linestyle='--', alpha=0.3, linewidth=1)
         ax.axhline(y=0.95, color='gray', linestyle='--', alpha=0.3, linewidth=1)
 
-    # Row 2, Col 3: Learning Rate Schedule
+    # Row 2, Col 3: Learning Rate Schedule (and Alpha if available)
     ax = axes[1, 2]
 
     # Check if learning rate history is available
     if 'learning_rate' in history and len(history['learning_rate']) > 0:
         lr_history = history['learning_rate']
-        ax.plot(epochs, lr_history, 'purple', linewidth=2, marker='o', markersize=3, alpha=0.8)
+        ln1 = ax.plot(epochs, lr_history, 'purple', linewidth=2, marker='o', markersize=3, alpha=0.8, label='LR')
         ax.set_xlabel('Epoch', fontsize=11)
-        ax.set_ylabel('Learning Rate', fontsize=11)
-        ax.set_title('Learning Rate Schedule', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Learning Rate', fontsize=11, color='purple')
+        ax.tick_params(axis='y', labelcolor='purple')
         ax.set_yscale('log')
         ax.grid(True, alpha=0.3)
 
@@ -578,13 +709,34 @@ def plot_training_history(history, save_path=None):
         # Add final LR annotation
         final_lr = lr_history[-1]
         initial_lr = lr_history[0]
-        ax.annotate(f'Final: {final_lr:.2e}', xy=(epochs[-1], final_lr),
-                   xytext=(-50, 10), textcoords='offset points',
-                   fontsize=9, color='purple')
-        if final_lr != initial_lr:
-            reduction_factor = initial_lr / final_lr
-            ax.set_title(f'Learning Rate Schedule ({reduction_factor:.1f}x reduction)',
-                        fontsize=12, fontweight='bold')
+
+        # Check if alpha history is available and varies
+        has_alpha = 'alpha' in history and len(history['alpha']) > 0
+        alpha_varies = has_alpha and (max(history['alpha']) != min(history['alpha']))
+
+        if alpha_varies:
+            ax2 = ax.twinx()
+            alpha_history = history['alpha']
+            ln2 = ax2.plot(epochs, alpha_history, 'orange', linewidth=2, alpha=0.8, label='Alpha')
+            ax2.set_ylabel('Alpha (loss balance)', fontsize=11, color='orange')
+            ax2.tick_params(axis='y', labelcolor='orange')
+            ax2.set_ylim([0, 1])
+
+            # Combined legend
+            lns = ln1 + ln2
+            labs = [l.get_label() for l in lns]
+            ax.legend(lns, labs, loc='upper right', fontsize=9)
+            ax.set_title('LR & Alpha Schedule', fontsize=12, fontweight='bold')
+        else:
+            ax.annotate(f'Final: {final_lr:.2e}', xy=(epochs[-1], final_lr),
+                       xytext=(-50, 10), textcoords='offset points',
+                       fontsize=9, color='purple')
+            if final_lr != initial_lr:
+                reduction_factor = initial_lr / final_lr
+                ax.set_title(f'Learning Rate Schedule ({reduction_factor:.1f}x reduction)',
+                            fontsize=12, fontweight='bold')
+            else:
+                ax.set_title('Learning Rate Schedule', fontsize=12, fontweight='bold')
     else:
         # Fallback: show text summary if no LR history
         ax.axis('off')
@@ -765,11 +917,36 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         lr=config.LEARNING_RATE,
         weight_decay=config.WEIGHT_DECAY
     )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min',
-        factor=config.SCHEDULER_FACTOR,
-        patience=config.SCHEDULER_PATIENCE
-    )
+
+    # Learning rate scheduler
+    scheduler_type = getattr(config, 'LR_SCHEDULER', 'plateau')
+    if scheduler_type == 'cosine':
+        # Cosine annealing: smooth decay to minimum LR
+        t_max = getattr(config, 'COSINE_T_MAX', None) or config.NUM_EPOCHS
+        eta_min = getattr(config, 'COSINE_ETA_MIN', 1e-6)
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=t_max,
+            eta_min=eta_min
+        )
+        print(f"LR scheduler: CosineAnnealing (T_max={t_max}, eta_min={eta_min:.2e})")
+    else:
+        # ReduceLROnPlateau (default): reduce LR when validation loss plateaus
+        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min',
+            factor=config.SCHEDULER_FACTOR,
+            patience=config.SCHEDULER_PATIENCE
+        )
+        print(f"LR scheduler: ReduceLROnPlateau (patience={config.SCHEDULER_PATIENCE}, factor={config.SCHEDULER_FACTOR})")
+
+    # Create alpha scheduler for dynamic loss balancing
+    alpha_scheduler = AlphaScheduler.from_config(config)
+    if alpha_scheduler is not None:
+        print(f"Alpha scheduling enabled:")
+        print(f"  Initial alpha: {alpha_scheduler.initial_alpha}")
+        print(f"  Final alpha: {alpha_scheduler.final_alpha}")
+        print(f"  Warmup epochs: {alpha_scheduler.warmup_epochs}")
+        print(f"  Decay epochs: {alpha_scheduler.decay_epochs}")
 
     # Resume from checkpoint if provided
     start_epoch = 0
@@ -794,7 +971,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         'val_supervised_loss': [],
         'val_physics_loss': [],
         'val_metrics': [],
-        'learning_rate': []
+        'learning_rate': [],
+        'alpha': []  # Track alpha over training
     }
     
     # Save config for this run
@@ -819,18 +997,29 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
     
     for epoch in range(start_epoch, config.NUM_EPOCHS):
         epoch_start = time.time()
-        
+
+        # Update alpha if using dynamic scheduling
+        if alpha_scheduler is not None:
+            current_alpha = alpha_scheduler.step(epoch)
+            criterion.set_alpha(current_alpha)
+        else:
+            current_alpha = criterion.alpha if hasattr(criterion, 'alpha') else config.ALPHA
+
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}")
         print(f"{'-'*60}")
-        
+
         # Train (returns dict with loss components)
         train_losses = train_epoch(model, train_loader, criterion, optimizer, device, config)
 
         # Validate (returns dict with loss components)
         val_losses, val_metrics = validate(model, val_loader, criterion, device, config)
 
-        # Update scheduler
-        scheduler.step(val_losses['total'])
+        # Update LR scheduler
+        # CosineAnnealingLR doesn't need val_loss, ReduceLROnPlateau does
+        if scheduler_type == 'cosine':
+            lr_scheduler.step()
+        else:
+            lr_scheduler.step(val_losses['total'])
 
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -844,13 +1033,14 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         history['val_physics_loss'].append(val_losses.get('physics', 0.0))
         history['val_metrics'].append(val_metrics)
         history['learning_rate'].append(current_lr)
+        history['alpha'].append(current_alpha)
 
         # Print epoch summary
         epoch_time = time.time() - epoch_start
         print(f"\nEpoch {epoch+1} Summary:")
         print(f"  Train Loss: {train_losses['total']:.6f} (supervised: {train_losses.get('supervised', 0.0):.6f}, physics: {train_losses.get('physics', 0.0):.6f})")
         print(f"  Val Loss:   {val_losses['total']:.6f} (supervised: {val_losses.get('supervised', 0.0):.6f}, physics: {val_losses.get('physics', 0.0):.6f})")
-        print(f"  LR:         {current_lr:.2e}")
+        print(f"  LR:         {current_lr:.2e}  |  Alpha: {current_alpha:.3f}")
         print(f"  Time: {epoch_time:.1f}s")
         print_metrics(val_metrics, title="Validation Metrics")
         
@@ -870,7 +1060,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                 'best_val_loss': best_val_loss,
                 'config': run_config,
                 'network_name': network_name,
-                'run_name': run_name
+                'run_name': run_name,
+                'alpha_scheduler_state': alpha_scheduler.state_dict() if alpha_scheduler else None
             }
 
             save_path = model_dir / 'best_model.pt'
@@ -891,7 +1082,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                 'best_val_loss': best_val_loss,
                 'config': run_config,
                 'network_name': network_name,
-                'run_name': run_name
+                'run_name': run_name,
+                'alpha_scheduler_state': alpha_scheduler.state_dict() if alpha_scheduler else None
             }
 
             save_path = model_dir / f'checkpoint_epoch_{epoch+1}.pt'
@@ -917,13 +1109,14 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
         'config': run_config,
         'network_name': network_name,
         'run_name': run_name,
-        'history': history
+        'history': history,
+        'alpha_scheduler_state': alpha_scheduler.state_dict() if alpha_scheduler else None
     }
-    
+
     save_path = model_dir / 'final_model.pt'
     torch.save(final_checkpoint, save_path)
     print(f"✓ Saved final model to {save_path}")
-    
+
     # Save training history
     history_path = results_dir / 'training_history.json'
     with open(history_path, 'w') as f:
@@ -939,7 +1132,8 @@ def train(config, network_name='cnn', run_name=None, resume_from=None):
                 {k: float(v) for k, v in m.items()}
                 for m in history['val_metrics']
             ],
-            'learning_rate': history['learning_rate']
+            'learning_rate': history['learning_rate'],
+            'alpha': history['alpha']
         }
         json.dump(history_json, f, indent=2)
     print(f"✓ Saved training history to {history_path}")

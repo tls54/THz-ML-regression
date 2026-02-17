@@ -79,8 +79,17 @@ def load_training_config(config_name, config_dir=None):
         config.LEARNING_RATE = train.get('learning_rate', config.LEARNING_RATE)
         config.WEIGHT_DECAY = train.get('weight_decay', config.WEIGHT_DECAY)
         config.PATIENCE = train.get('patience', config.PATIENCE)
+
+        # LR scheduler settings
+        config.LR_SCHEDULER = train.get('lr_scheduler', config.LR_SCHEDULER)
         config.SCHEDULER_PATIENCE = train.get('scheduler_patience', config.SCHEDULER_PATIENCE)
         config.SCHEDULER_FACTOR = train.get('scheduler_factor', config.SCHEDULER_FACTOR)
+        config.COSINE_T_MAX = train.get('cosine_t_max', config.COSINE_T_MAX)
+        config.COSINE_ETA_MIN = train.get('cosine_eta_min', config.COSINE_ETA_MIN)
+
+        # Gradient clipping
+        if 'grad_clip_norm' in train:
+            config.GRAD_CLIP_NORM = train['grad_clip_norm']
 
     # Apply loss settings
     if 'loss' in config_dict:
@@ -92,8 +101,21 @@ def load_training_config(config_name, config_dir=None):
             config.USE_NORMALIZED_SUPERVISED_LOSS
         )
         config.PHYSICS_LOSS_SCALE = loss.get('physics_loss_scale', config.PHYSICS_LOSS_SCALE)
+        config.PHYSICS_LOSS_MODE = loss.get('physics_loss_mode', config.PHYSICS_LOSS_MODE)
+        if 'physics_freq_min' in loss:
+            config.PHYSICS_FREQ_MIN = loss['physics_freq_min']
+        if 'physics_freq_max' in loss:
+            config.PHYSICS_FREQ_MAX = loss['physics_freq_max']
         if 'param_weights' in loss:
             config.PARAM_WEIGHTS = loss['param_weights']
+
+        # Alpha scheduling settings
+        if 'alpha_schedule' in loss:
+            sched = loss['alpha_schedule']
+            config.ALPHA_SCHEDULE_ENABLED = sched.get('enabled', False)
+            config.ALPHA_WARMUP_EPOCHS = sched.get('warmup_epochs', config.ALPHA_WARMUP_EPOCHS)
+            config.ALPHA_FINAL = sched.get('final_alpha', config.ALPHA_FINAL)
+            config.ALPHA_DECAY_EPOCHS = sched.get('decay_epochs', config.ALPHA_DECAY_EPOCHS)
 
     # Apply dataset settings
     if 'dataset' in config_dict:
@@ -169,15 +191,32 @@ def print_config_summary(config):
     print(f"  Learning rate: {config.LEARNING_RATE}")
     print(f"  Weight decay: {config.WEIGHT_DECAY}")
     print(f"  Early stop patience: {config.PATIENCE}")
-    print(f"  Scheduler patience: {config.SCHEDULER_PATIENCE}")
-    print(f"  Scheduler factor: {config.SCHEDULER_FACTOR}")
+
+    # LR Scheduler
+    lr_scheduler = getattr(config, 'LR_SCHEDULER', 'plateau')
+    print(f"  LR scheduler: {lr_scheduler}")
+    if lr_scheduler == 'cosine':
+        t_max = getattr(config, 'COSINE_T_MAX', None) or config.NUM_EPOCHS
+        eta_min = getattr(config, 'COSINE_ETA_MIN', 1e-6)
+        print(f"    T_max: {t_max}, eta_min: {eta_min:.2e}")
+    else:
+        print(f"    Patience: {config.SCHEDULER_PATIENCE}, Factor: {config.SCHEDULER_FACTOR}")
 
     print(f"\nLoss Function:")
     print(f"  Type: {config.LOSS_TYPE}")
     print(f"  Alpha: {config.ALPHA}")
     print(f"  Normalized supervised loss: {config.USE_NORMALIZED_SUPERVISED_LOSS}")
     print(f"  Physics loss scale: {config.PHYSICS_LOSS_SCALE}")
+    print(f"  Physics loss mode: {getattr(config, 'PHYSICS_LOSS_MODE', 'real_imag')}")
     print(f"  Parameter weights: {config.PARAM_WEIGHTS}")
+
+    # Alpha scheduling
+    if getattr(config, 'ALPHA_SCHEDULE_ENABLED', False):
+        print(f"\nAlpha Scheduling:")
+        print(f"  Enabled: True")
+        print(f"  Warmup epochs: {config.ALPHA_WARMUP_EPOCHS}")
+        print(f"  Final alpha: {config.ALPHA_FINAL}")
+        print(f"  Decay epochs: {config.ALPHA_DECAY_EPOCHS}")
 
     print("=" * 70)
 
