@@ -102,6 +102,8 @@ def load_training_config(config_name, config_dir=None):
         )
         config.PHYSICS_LOSS_SCALE = loss.get('physics_loss_scale', config.PHYSICS_LOSS_SCALE)
         config.PHYSICS_LOSS_MODE = loss.get('physics_loss_mode', config.PHYSICS_LOSS_MODE)
+        if 'physics_combined_weight' in loss:
+            config.PHYSICS_COMBINED_WEIGHT = loss['physics_combined_weight']
         if 'physics_freq_min' in loss:
             config.PHYSICS_FREQ_MIN = loss['physics_freq_min']
         if 'physics_freq_max' in loss:

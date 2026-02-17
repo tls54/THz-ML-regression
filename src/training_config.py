@@ -69,7 +69,10 @@ class Config:
     # Physics loss mode: how to compare predicted vs true transmission
     # 'real_imag': MSE on real and imaginary parts (default, can have coupled gradients)
     # 'mag_phase': MSE on magnitude + phase via sin/cos (decouples n/κ gradients, more stable)
+    # 'log_mag_phase': Log-magnitude + phase (stable for validation, handles low transmission)
+    # 'combined': Weighted sum of real_imag and mag_phase
     PHYSICS_LOSS_MODE = 'real_imag'
+    PHYSICS_COMBINED_WEIGHT = 0.5  # For combined mode: weight for real_imag (1-w for mag_phase)
 
     # Network Architecture
     # CNN/ResNet scaling parameters

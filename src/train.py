@@ -130,15 +130,25 @@ class AlphaScheduler:
 class PhysicsInformedLoss(nn.Module):
     """Physics-informed loss using forward model with optional frequency banding.
 
-    Supports two modes:
+    Supports four modes:
     - 'real_imag': MSE on real and imaginary parts (default)
     - 'mag_phase': MSE on magnitude + phase via sin/cos (decouples gradients)
+    - 'log_mag_phase': Log-magnitude + phase (stable for low transmission values)
+    - 'combined': Weighted sum of real_imag and mag_phase
 
     The mag_phase mode separates the physics more cleanly:
     - |T| is dominated by κ (absorption) → exponential decay
     - ∠T is dominated by n×d (optical path) → linear phase accumulation
 
-    This reduces gradient coupling and can stabilize training, especially for κ.
+    The log_mag_phase mode is more stable for validation:
+    - Uses log(|T|) instead of |T|, preventing small transmission values from
+      causing disproportionately large errors
+    - Better behaved when model predicts slightly wrong parameters for samples
+      with high absorption (low |T|)
+
+    The combined mode provides:
+    - Real/Imag: coupled gradients that help disambiguate n from d
+    - Mag/Phase: decoupled gradients that stabilize κ training
     """
 
     def __init__(self, config):
@@ -150,8 +160,16 @@ class PhysicsInformedLoss(nn.Module):
         self.freq_min = getattr(config, 'PHYSICS_FREQ_MIN', 0.3e12)
         self.freq_max = getattr(config, 'PHYSICS_FREQ_MAX', 2.5e12)
 
-        # Loss mode: 'real_imag' or 'mag_phase'
+        # Loss mode: 'real_imag', 'mag_phase', 'log_mag_phase', or 'combined'
         self.mode = getattr(config, 'PHYSICS_LOSS_MODE', 'real_imag')
+
+        # Weight for combining modes (only used in 'combined' mode)
+        # Higher = more real/imag, Lower = more mag/phase
+        # Default 0.5 = equal weighting
+        self.combined_weight = getattr(config, 'PHYSICS_COMBINED_WEIGHT', 0.5)
+
+        # Epsilon for log-magnitude to avoid log(0)
+        self.log_eps = 1e-8
 
         # Precompute frequency indices for the band
         # frequencies = [0, deltaf, 2*deltaf, ..., M*deltaf]
@@ -196,29 +214,42 @@ class PhysicsInformedLoss(nn.Module):
         T_pred_band = T_pred[:, self.idx_min:self.idx_max]
         true_T_band = true_T[:, self.idx_min:self.idx_max]
 
+        # Compute real/imag loss
+        loss_real = torch.mean((T_pred_band.real - true_T_band.real) ** 2)
+        loss_imag = torch.mean((T_pred_band.imag - true_T_band.imag) ** 2)
+        loss_real_imag = loss_real + loss_imag
+
+        if self.mode == 'real_imag':
+            return loss_real_imag
+
+        # Compute mag/phase loss
+        mag_pred = torch.abs(T_pred_band)
+        mag_true = torch.abs(true_T_band)
+        loss_mag = torch.mean((mag_pred - mag_true) ** 2)
+
+        # Phase via sin/cos: avoids wrapping issues at ±π
+        phase_pred = torch.angle(T_pred_band)
+        phase_true = torch.angle(true_T_band)
+        loss_phase_cos = torch.mean((torch.cos(phase_pred) - torch.cos(phase_true)) ** 2)
+        loss_phase_sin = torch.mean((torch.sin(phase_pred) - torch.sin(phase_true)) ** 2)
+        loss_phase = loss_phase_cos + loss_phase_sin
+        loss_mag_phase = loss_mag + loss_phase
+
         if self.mode == 'mag_phase':
-            # Magnitude/Phase mode: decouples n/κ gradients
-            # Magnitude: dominated by absorption (κ)
-            mag_pred = torch.abs(T_pred_band)
-            mag_true = torch.abs(true_T_band)
-            loss_mag = torch.mean((mag_pred - mag_true) ** 2)
+            return loss_mag_phase
 
-            # Phase via sin/cos: avoids wrapping issues at ±π
-            # This is equivalent to comparing unit vectors on the complex plane
-            phase_pred = torch.angle(T_pred_band)
-            phase_true = torch.angle(true_T_band)
+        if self.mode == 'log_mag_phase':
+            # Log-magnitude mode: more stable for low transmission values
+            # This prevents samples with high absorption from dominating the loss
+            log_mag_pred = torch.log(mag_pred + self.log_eps)
+            log_mag_true = torch.log(mag_true + self.log_eps)
+            loss_log_mag = torch.mean((log_mag_pred - log_mag_true) ** 2)
+            return loss_log_mag + loss_phase
 
-            # Use sin/cos to avoid phase wrapping discontinuities
-            loss_phase_cos = torch.mean((torch.cos(phase_pred) - torch.cos(phase_true)) ** 2)
-            loss_phase_sin = torch.mean((torch.sin(phase_pred) - torch.sin(phase_true)) ** 2)
-
-            return loss_mag + loss_phase_cos + loss_phase_sin
-        else:
-            # Real/Imag mode (default): standard approach
-            loss_real = torch.mean((T_pred_band.real - true_T_band.real) ** 2)
-            loss_imag = torch.mean((T_pred_band.imag - true_T_band.imag) ** 2)
-
-            return loss_real + loss_imag
+        # Combined mode: weighted sum of both
+        # w * real_imag + (1-w) * mag_phase
+        w = self.combined_weight
+        return w * loss_real_imag + (1 - w) * loss_mag_phase
 
 
 class NormalizedMSELoss(nn.Module):

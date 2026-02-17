@@ -30,7 +30,7 @@
     "alpha": 0.7,
     "use_normalized_supervised_loss": true,
     "physics_loss_scale": 0.3,
-    "physics_loss_mode": "mag_phase",
+    "physics_loss_mode": "log_mag_phase",
     "param_weights": {
       "n": 1.0,
       "kappa": 1.0,
