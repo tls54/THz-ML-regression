@@ -36,9 +36,19 @@ def load_trained_model(checkpoint_path, device='cpu'):
 
     # Extract network config from checkpoint to reconstruct model with correct architecture
     network_kwargs = {}
-    if 'config' in checkpoint and 'config' in checkpoint['config']:
-        saved_config = checkpoint['config']['config']
+    saved_config = None
 
+    # Try different config locations (handles both old and new checkpoint formats)
+    if 'config' in checkpoint:
+        cfg = checkpoint['config']
+        # New format: checkpoint['config']['config'] contains the actual config dict
+        if isinstance(cfg, dict) and 'config' in cfg:
+            saved_config = cfg['config']
+        # Old format: checkpoint['config'] is the config dict directly
+        elif isinstance(cfg, dict):
+            saved_config = cfg
+
+    if saved_config is not None:
         if network_name == 'resnet_scalable':
             network_kwargs = {
                 'width_mult': saved_config.get('RESNET_WIDTH_MULT', 1.0),
@@ -46,6 +56,7 @@ def load_trained_model(checkpoint_path, device='cpu'):
                 'base_channels': saved_config.get('RESNET_BASE_CHANNELS', 64),
                 'fc_hidden_dims': saved_config.get('FC_HIDDEN_DIMS', [64]),
                 'dropout': saved_config.get('RESNET_DROPOUT', 0.2),
+                'activation': saved_config.get('ACTIVATION', 'relu'),
             }
         elif network_name == 'cnn_scalable':
             network_kwargs = {
@@ -54,6 +65,7 @@ def load_trained_model(checkpoint_path, device='cpu'):
                 'base_channels': saved_config.get('CNN_BASE_CHANNELS', 32),
                 'fc_hidden_dims': saved_config.get('FC_HIDDEN_DIMS', [128, 64]),
                 'dropout': saved_config.get('CNN_DROPOUT', 0.2),
+                'activation': saved_config.get('ACTIVATION', 'relu'),
             }
 
     # Create model with saved config

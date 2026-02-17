@@ -678,12 +678,21 @@ def model_summary(model, print_output=True):
         lines.append(f"\nConvolutional Backbone:")
         lines.append(f"  Input: [batch, 2, n_freq] (real + imag)")
 
-        # Extract conv layers
+        # Extract conv layers and detect norm type
+        norm_type = "GN"  # default
+        for m in model.conv_layers:
+            if isinstance(m, nn.BatchNorm1d):
+                norm_type = "BN"
+                break
+            elif isinstance(m, nn.GroupNorm):
+                norm_type = "GN"
+                break
+
         block_idx = 0
         for i, m in enumerate(model.conv_layers):
             if isinstance(m, nn.Conv1d):
                 block_idx += 1
-                lines.append(f"  Block {block_idx}: Conv1d({m.in_channels} → {m.out_channels}, k={m.kernel_size[0]}) → BN → ReLU → MaxPool")
+                lines.append(f"  Block {block_idx}: Conv1d({m.in_channels} → {m.out_channels}, k={m.kernel_size[0]}) → {norm_type} → ReLU → MaxPool")
 
         lines.append(f"  Global: AdaptiveAvgPool1d(1)")
 
